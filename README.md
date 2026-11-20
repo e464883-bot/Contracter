@@ -105,6 +105,10 @@ un archivo y restablecer el expediente no llaman al modelo. Las consultas
 usan la cadena abreviada y una auditoría completa requiere más llamadas.
 La aprobación formal requiere un expediente autorizado y fuentes revisadas.
 
+El [respaldo local de Telegram V2](integration/RESPALDO-SIN-N8N.md) usa Node.js
+para atender el mismo chat y conservar su expediente en Supabase si dejas de
+usar n8n Cloud.
+
 ## Telegram V1 por comandos
 
 Cuando se habilite `integration/n8n/live_telegram.json`, el chat privado
