@@ -1,0 +1,263 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { once } from 'node:events';
+import { request as httpRequest } from 'node:http';
+import { createGateway, loadConfig, openMockStore, createSupabaseAdapter } from './server.mjs';
+import { createHandler, createRestRpc, sha256 } from '../integration/supabase/functions/contracter-store/index.ts';
+
+const sample = JSON.parse(await readFile(new URL('../docs/data/sample_case.json', import.meta.url), 'utf8'));
+const catalog = JSON.parse(await readFile(new URL('../legal_sources/catalog.json', import.meta.url), 'utf8'));
+const testToken = 'TEST-ONLY-NOT-A-PROVIDER-KEY-32-CHARACTERS';
+const config = (extra = {}) => loadConfig({ CONTRACTER_MODE:'mock', CONTRACTER_PORT:'0',
+  CONTRACTER_DASHBOARD_TOKEN:testToken, CONTRACTER_SQLITE_PATH:':memory:', ...extra });
+const auth = { Authorization:`Bearer ${testToken}` };
+async function launch(t, options = {}) {
+  const app = await createGateway({ config:config(), ...options });
+  app.server.listen(0,'127.0.0.1');
+  await once(app.server,'listening');
+  t.after(() => app.close());
+  return { ...app, base:`http://127.0.0.1:${app.server.address().port}` };
+}
+const post = (base, body, headers = {}) => ({ method:'POST', headers:{ ...auth, Origin:base,
+  'Content-Type':'application/json', ...headers }, body:JSON.stringify(body) });
+
+test('configuración live falla cerrada sin Supabase/token y rechaza origen inseguro', () => {
+  assert.throws(() => loadConfig({ CONTRACTER_MODE:'live' }), /Live requiere/);
+  assert.throws(() => config({ CONTRACTER_ALLOWED_ORIGINS:'http://example.invalid' }), /HTTP sólo/);
+  assert.throws(() => config({ CONTRACTER_DASHBOARD_TOKEN:'corto' }), /32 caracteres/);
+});
+
+test('SQLite sólo conserva fixture identificada, 13 roles y eventos; seed idempotente', async () => {
+  const store = openMockStore();
+  try {
+    store.seed(sample,catalog); store.seed(sample,catalog);
+    assert.deepEqual(store.counts(), { cases:1, outputs:13, costs:13, sources:7 });
+    assert.deepEqual(await store.getCase(sample.case_id),sample);
+    assert.equal(await store.getCase('99999999-9999-4999-8999-999999999999'),null);
+  } finally { store.close(); }
+});
+
+test('API requiere bearer, preserva hash y declara conexiones sin verificar', async t => {
+  const {base} = await launch(t);
+  assert.equal((await fetch(base+'/cases/'+sample.case_id)).status,401);
+  assert.equal((await fetch(base+'/cases/'+sample.case_id,{headers:{Authorization:'Bearer incorrecto'}})).status,401);
+  const response = await fetch(base+'/cases/'+sample.case_id,{headers:auth});
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),sample);
+  const health = await (await fetch(base+'/health',{headers:auth})).json();
+  assert.equal(health.mode,'mock');
+  assert.equal(health.services.legal_sources.corpus_ingested,false);
+  assert.equal(health.services.database.connectivity_verified,false);
+});
+
+test('inicio mock sin claves permite su fixture pública y mantiene voz/RAG cerrados', async t => {
+  const {base}=await launch(t,{config:config({CONTRACTER_DASHBOARD_TOKEN:''})});
+  const response=await fetch(base+'/api/cases/'+sample.case_id);
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),sample);
+  const health=await (await fetch(base+'/api/health')).json();
+  assert.equal(health.mode,'mock');
+  assert.equal(health.authentication,'unconfigured');
+  assert.equal((await fetch(base+'/api/legal/search',post(base,{query:'pago'}))).status,401);
+  assert.equal((await fetch(base+'/api/voice/session',post(base,{case_id:sample.case_id}))).status,401);
+});
+
+test('host/origen ajenos, secretos y cuerpos incorrectos se bloquean', async t => {
+  const {base} = await launch(t);
+  assert.equal((await fetch(base+'/health',{headers:{...auth,Origin:'https://evil.invalid'}})).status,403);
+  const forgedHostStatus = await new Promise((resolve,reject) => {
+    const req=httpRequest(base+'/health',{headers:{...auth,Host:'evil.invalid'}},res=>{res.resume();resolve(res.statusCode);});
+    req.on('error',reject);req.end();
+  });
+  assert.equal(forgedHostStatus,421);
+  assert.equal((await fetch(base+'/.env')).status,404);
+  assert.equal((await fetch(base+'/backend/server.mjs')).status,404);
+  assert.equal((await fetch(base+'/voice/session',post(base,{}))).status,400);
+  assert.equal((await fetch(base+'/voice/session',post(base,{case_id:sample.case_id}))).status,503);
+  assert.equal((await fetch(base+'/legal/search',post(base,{query:'pago',p_include_unreviewed:true}))).status,400);
+  assert.equal((await fetch(base+'/legal/search',post(base,{query:'pago',municipality_code:'001'}))).status,400);
+});
+
+test('Supabase usa sólo clave servidor, filtro de caso y RPC territorial explícita', async () => {
+  const seen=[];
+  const adapter=createSupabaseAdapter(config({SUPABASE_URL:'https://project.example.invalid',SUPABASE_SECRET_KEY:'sb_secret_TEST_ONLY'}),async (url,options) => {
+    seen.push({url:String(url),options});
+    return Response.json(String(url).includes('/rpc/')?[]:[{case_json:sample}]);
+  });
+  assert.deepEqual(await adapter.getCase(sample.case_id),sample);
+  assert.deepEqual(await adapter.searchLegal({p_query:'pago',p_limit:8,p_include_unreviewed:false}),[]);
+  assert.match(seen[0].url,/id_caso=eq\.11111111/);
+  assert.equal(seen[0].options.headers.apikey,'sb_secret_TEST_ONLY');
+  assert.equal(seen[0].options.headers.Authorization,undefined);
+  assert.equal(JSON.parse(seen[1].options.body).p_include_unreviewed,false);
+});
+
+test('la lectura privada conserva V2 y distingue un expediente ausente del servicio ausente', async t => {
+  const storeToken = 'a'.repeat(64);
+  const digest = await sha256(storeToken);
+  const live = { ...sample, mode: 'live' };
+  const syntheticId = '22222222-2222-4222-8222-222222222222';
+  const missingId = '99999999-9999-4999-8999-999999999999';
+  let serviceAvailable = true;
+  let reads = 0;
+  const rpc = createRestRpc('https://database.invalid', 'fixture-only', async (url, options) => {
+    const args = JSON.parse(options.body);
+    if (url.pathname.endsWith('/contracter_runtime_authorize')) {
+      return Response.json(args.p_scope === 'dashboard' && args.p_token_sha256 === digest);
+    }
+    assert.equal(url.pathname, '/rest/v1/rpc/contracter_get_case');
+    assert.equal(args.p_owner_chat_id, null);
+    reads++;
+    if (args.p_case_id === missingId) {
+      return Response.json({ code: 'PT404', message: 'CASE_NOT_FOUND' }, { status: 404 });
+    }
+    const synthetic = args.p_case_id === syntheticId;
+    return Response.json({ case: { ...live, case_id: args.p_case_id }, status: 'AWAITING_HUMAN', synthetic });
+  });
+  const handler = createHandler(rpc);
+  const { base } = await launch(t, {
+    config: config({ CONTRACTER_MODE: 'live', SUPABASE_URL: 'https://aaaaaaaaaaaaaaaaaaaa.supabase.co',
+      CONTRACTER_STORE_READ_TOKEN: storeToken }),
+    fetchFn: async (url, options) => {
+      assert.equal(url.pathname, '/functions/v1/contracter-store');
+      assert.equal(options.headers.Authorization, 'Bearer ' + storeToken);
+      assert.equal(options.headers.apikey, undefined);
+      if (!serviceAvailable) {
+        return Response.json({ code: 'NOT_FOUND', message: 'PRIVATE_UPSTREAM_DETAIL' }, { status: 404 });
+      }
+      return handler(new Request(url, options));
+    },
+  });
+  const getCase = (id, headers) => fetch(base + '/api/cases/' + id, { headers });
+  assert.equal((await getCase(live.case_id)).status, 401);
+  assert.equal(reads, 0);
+  const response = await getCase(live.case_id, auth);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  const received = await response.json();
+  assert.deepEqual(received.versions.v2, live.versions.v2);
+  assert.deepEqual(received.human_approval, live.human_approval);
+  assert.equal((await getCase(syntheticId, auth)).status, 404);
+  assert.equal((await getCase(missingId, auth)).status, 404);
+  serviceAvailable = false;
+  const unavailable = await getCase(live.case_id, auth);
+  assert.equal(unavailable.status, 502);
+  const error = await unavailable.json();
+  assert.equal(error.error, 'STORE_UNAVAILABLE');
+  assert.doesNotMatch(error.message, /PRIVATE_UPSTREAM_DETAIL/);
+});
+
+test('el panel combina la lectura privada y la búsqueda revisada con credenciales separadas', async t => {
+  const readToken = 'a'.repeat(64);
+  const serverKey = 'sb_secret_TEST_ONLY';
+  const liveCase = { ...sample, mode: 'live' };
+  const common = {
+    CONTRACTER_MODE: 'live', SUPABASE_URL: 'https://aaaaaaaaaaaaaaaaaaaa.supabase.co',
+    CONTRACTER_STORE_READ_TOKEN: readToken,
+  };
+  const fetchFn = async (url, options) => {
+    if (url.pathname === '/functions/v1/contracter-store') {
+      assert.equal(options.headers.Authorization, 'Bearer ' + readToken);
+      assert.equal(options.headers.apikey, undefined);
+      assert.deepEqual(JSON.parse(options.body), {
+        operation: 'get_case', audience: 'dashboard', case_id: liveCase.case_id,
+      });
+      return Response.json({ case: liveCase, synthetic: false });
+    }
+    assert.equal(url.pathname, '/rest/v1/rpc/legal_search_fts');
+    assert.equal(options.headers.apikey, serverKey);
+    assert.equal(options.headers.Authorization, undefined);
+    assert.equal(JSON.parse(options.body).p_include_unreviewed, false);
+    return Response.json([{ title: 'Fuente revisada de prueba' }]);
+  };
+  const { base } = await launch(t, {
+    config: config({ ...common, CONTRACTER_LEGAL_RAG_ENABLED: 'true', SUPABASE_SECRET_KEY: serverKey }),
+    fetchFn,
+  });
+  const record = await fetch(base + '/api/cases/' + liveCase.case_id, { headers: auth });
+  assert.equal(record.status, 200);
+  assert.deepEqual(await record.json(), liveCase);
+  const search = await fetch(base + '/api/legal/search', post(base, { query: 'pago' }));
+  assert.equal(search.status, 200);
+  assert.deepEqual((await search.json()).results, [{ title: 'Fuente revisada de prueba' }]);
+  const health = await fetch(base + '/api/health', { headers: auth });
+  assert.equal((await health.json()).services.legal_sources.retrieval_configured, true);
+
+  for (const options of [{ CONTRACTER_LEGAL_RAG_ENABLED: 'true' }, { SUPABASE_SECRET_KEY: serverKey }]) {
+    const { base: restrictedBase } = await launch(t, {
+      config: config({ ...common, ...options }),
+      fetchFn: () => assert.fail('La búsqueda desactivada no debe consultar el proveedor'),
+    });
+    const blocked = await fetch(restrictedBase + '/api/legal/search', post(restrictedBase, { query: 'pago' }));
+    assert.equal(blocked.status, 503);
+    assert.equal((await blocked.json()).error, 'LEGAL_UNCONFIGURED');
+  }
+});
+
+test('un panel de evaluación sólo muestra el expediente sintético autorizado', async t => {
+  const storeToken = 'a'.repeat(64);
+  const evaluationId = sample.case_id;
+  const live = { ...sample, mode: 'live' };
+  const settings = { CONTRACTER_MODE: 'live', SUPABASE_URL: 'https://aaaaaaaaaaaaaaaaaaaa.supabase.co',
+    CONTRACTER_STORE_READ_TOKEN: storeToken, CONTRACTER_DASHBOARD_EVALUATION_CASE_ID: evaluationId };
+  assert.throws(() => config({ ...settings, CONTRACTER_STORE_READ_TOKEN: '' }), { code: 'CONFIG_EVALUATION_CASE' });
+  let reads = 0;
+  let result = { synthetic: true, case: live };
+  const { base } = await launch(t, {
+    config: config(settings),
+    fetchFn: async (url, options) => {
+      reads++;
+      assert.equal(url.pathname, '/functions/v1/contracter-store');
+      assert.equal(options.headers.Authorization, 'Bearer ' + storeToken);
+      assert.equal(JSON.parse(options.body).case_id, evaluationId);
+      return Response.json(result);
+    },
+  });
+  const url = base + '/api/cases/' + evaluationId;
+  assert.equal((await fetch(url)).status, 401);
+  assert.equal((await fetch(base + '/api/cases/22222222-2222-4222-8222-222222222222', { headers: auth })).status, 404);
+  assert.equal(reads, 0);
+  const response = await fetch(url, { headers: auth });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ...live, evaluation: true });
+  result = { synthetic: false, case: live };
+  assert.equal((await fetch(url, { headers: auth })).status, 404);
+  result = { synthetic: true, case: { ...live, human_approval: { ...live.human_approval, status: 'APPROVED' } } };
+  assert.equal((await fetch(url, { headers: auth })).status, 404);
+  assert.equal(reads, 3);
+});
+
+test('voz valida acceso al caso, URL exacta, límites y no declara contexto enlazado', async t => {
+  let calls=0;
+  const live={...sample,mode:'live'};
+  const cfg=config({CONTRACTER_MODE:'live',SUPABASE_URL:'https://project.example.invalid',
+    SUPABASE_SECRET_KEY:'sb_secret_TEST_ONLY',ELEVENLABS_ENABLED:'true',
+    ELEVENLABS_AGENT_ID:'agent_TEST_ONLY',ELEVENLABS_API_KEY:'TEST_ONLY'});
+  const store={getCase:async id => id===sample.case_id?live:null,log(){},close(){}};
+  const {base}=await launch(t,{config:cfg,store,fetchFn:async (url,options) => {
+    calls++; assert.equal(new URL(url).hostname,'api.elevenlabs.io');
+    assert.equal(options.headers['xi-api-key'],'TEST_ONLY');
+    return Response.json({signed_url:'wss://api.elevenlabs.io/v1/convai/conversation?token=TEST_ONLY'});
+  }});
+  assert.equal((await fetch(base+'/voice/session',post(base,{case_id:'99999999-9999-4999-8999-999999999999'}))).status,404);
+  assert.equal(calls,0);
+  const response=await fetch(base+'/voice/session',post(base,{case_id:sample.case_id}));
+  const payload=await response.json(); assert.equal(response.status,200);
+  assert.equal(payload.case_id,sample.case_id); assert.equal(payload.context_linked,false);
+  assert.equal('api_key' in payload,false);
+  await fetch(base+'/voice/session',post(base,{case_id:sample.case_id}));
+  await fetch(base+'/voice/session',post(base,{case_id:sample.case_id}));
+  assert.equal((await fetch(base+'/voice/session',post(base,{case_id:sample.case_id}))).status,429);
+  assert.equal(calls,3);
+  assert.equal((await fetch(base+'/data/sample_case.json')).status,404);
+});
+
+test('voz rechaza subdominios ajenos y nunca imprime la respuesta secreta', async t => {
+  const cfg=config({CONTRACTER_MODE:'live',SUPABASE_URL:'https://project.example.invalid',SUPABASE_SECRET_KEY:'sb_secret_TEST_ONLY',
+    ELEVENLABS_ENABLED:'true',ELEVENLABS_AGENT_ID:'agent_TEST_ONLY',ELEVENLABS_API_KEY:'TEST_ONLY'});
+  const {base}=await launch(t,{config:cfg,store:{getCase:async()=>({...sample,mode:'live'}),log(){},close(){}},
+    fetchFn:async()=>Response.json({signed_url:'wss://api.elevenlabs.io.evil.invalid/v1/convai/conversation?secret=PRIVATE_TEST'})});
+  const res=await fetch(base+'/voice/session',post(base,{case_id:sample.case_id}));
+  assert.equal(res.status,502); assert.equal((await res.text()).includes('PRIVATE_TEST'),false);
+});

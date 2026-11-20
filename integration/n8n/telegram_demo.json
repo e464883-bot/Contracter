@@ -1,0 +1,639 @@
+{
+  "name": "CONTRACTER · Telegram · evaluación Gemini",
+  "nodes": [
+    {
+      "id": "2d22e00d-5bb6-47a7-abc9-b282c55cfe77",
+      "name": "Entrada del bot privado",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "09a5745d-39e3-4972-8e1a-0ab77abffbff",
+      "name": "Validar entrada Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { telegramIngress } = (() => {\nconst id = value => /^[1-9][0-9]{0,17}$/.test(String(value ?? '')) ? String(value) : null;\nconst uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;\nconst MAX_DOCUMENT_CHARS = 12_000;\nconst MAX_ATTACHMENT_BYTES = 36_000;\nconst MAX_CAPTION_CHARS = 1_024;\nconst clarificationInstruction = 'Agrega Aclaración: seguida de tus respuestas en una sola línea de hasta 500 caracteres.';\nconst directOpenAIWarning = 'Esta ruta utiliza OpenAI y puede consumir créditos.';\nconst evaluationInstruction = 'Para ver las opciones de evaluación con datos ficticios, usa /evaluar.';\nconst DEMO_QUESTIONS = Object.freeze({\n  entrega: '¿Qué ambigüedad tiene el plazo de entrega y qué debe aclarar la compradora?',\n  pago: '¿Qué ambigüedad tiene el inicio del plazo de pago de 30 días y qué debe aclarar la compradora?',\n  recepcion: '¿Cómo debería documentarse la recepción parcial y qué falta precisar para reportar diferencias de cantidad?',\n});\nconst demoAttachmentInstruction = 'La demo admite exclusivamente el .txt de la muestra de Contracter. Envía /demo para seleccionarla directamente.';\nconst evaluationOptions = [\n  'Evaluación de Contracter con un contrato ficticio incluido.',\n  '/demo — abrir la muestra y recibir comandos para consultar distintos temas.',\n  '/evaluar gemini consulta — ejecutar una consulta de muestra con Gemini.',\n  '/evaluar gemini — ejecutar la auditoría completa con Gemini.',\n  '/evaluar openai — consultar cómo confirmar la prueba fija con OpenAI.',\n  '/evaluar gateway — consultar el estado de la alternativa Gateway.',\n  '/evaluar confirmar — usar tu propio contrato ficticio con OpenAI. Incluye el formulario en el mismo mensaje.',\n].join('\\n');\n\nconst contextExample = [\n  '/auditar confirmar',\n  'Empresa: nuestra parte',\n  'Contraparte: la otra parte',\n  'Rol: comprador, proveedor u otro',\n  'Objetivo: qué necesitas proteger o verificar',\n  'Región: Federal',\n  'Confirmo: sí',\n];\nconst jurisdictionInstruction = 'Si aplica una entidad o municipio, indica Región y agrega Entidad (clave de 2 dígitos) y Municipio (clave de 3 dígitos).';\nconst attachmentInstructions = [\n  'Adjunta un solo archivo .txt guardado como UTF-8 y escribe estos datos en el pie del mismo mensaje.',\n  ...contextExample,\n  'Para una consulta puntual usa /consulta confirmar y agrega Pregunta: … al pie.',\n  evaluationInstruction,\n  clarificationInstruction,\n  jurisdictionInstruction,\n].join('\\n');\nconst instructions = [\n  'Envía el texto del contrato en el mismo mensaje, con estos datos:',\n  ...contextExample,\n  '---',\n  'Pega aquí el texto del contrato.',\n  'Para una consulta puntual usa /consulta confirmar y agrega la línea Pregunta: … antes de ---.',\n  evaluationInstruction,\n  clarificationInstruction,\n  jurisdictionInstruction,\n  'También puedes adjuntar un .txt UTF-8. Escribe el comando y los datos en el pie del mismo mensaje, sin --- ni texto del contrato en el pie.',\n].join('\\n');\n\nfunction evaluationFixture() {\n  return {\n    title: 'Compraventa mercantil de evaluación',\n    document: [\n      'CONTRATO FICTICIO DE COMPRAVENTA MERCANTIL',\n      '1. Objeto. La Proveedora de muestra vende a la Compradora de muestra 120 cajas de material de empaque por un precio total de $24,000 MXN, más los impuestos aplicables.',\n      '2. Entrega. La Proveedora entregará los productos durante el próximo mes en el almacén de la Compradora. Puede dividir la entrega según su disponibilidad. La Compradora recibirá los productos cuando lleguen y la Proveedora dará por cumplida su obligación de entrega.',\n      '3. Pago. La Compradora pagará en un plazo de 30 días. El plazo comenzará en cuanto la operación esté procesada. El precio se pagará mediante transferencia bancaria.',\n      '4. Recepción. Las partes conservarán los comprobantes de entrega. En caso de diferencias de cantidad, la Compradora las comunicará a la Proveedora para su revisión.',\n    ].join('\\n\\n'),\n    context: {\n      our_party: 'Compradora de muestra', counterparty: 'Proveedora de muestra', our_role: 'comprador',\n      objectives: ['Precisar los plazos de entrega, documentar la recepción parcial y definir el inicio del plazo de pago.'],\n      confirmed: true,\n    },\n    clarification: 'Las partes acuerdan entregar 60 cajas dentro de los primeros diez días naturales posteriores a la firma y 60 cajas dentro de los siguientes diez días. Cada recepción parcial debe documentar la cantidad recibida. El plazo de pago empieza al recibirse de conformidad las 120 cajas y la factura correspondiente.',\n    jurisdiction: { region: 'Federal', entity_code: null, municipality_code: null },\n  };\n}\n\nfunction eventUuid(digest) {\n  return [digest.slice(0, 8), digest.slice(8, 12), '8' + digest.slice(13, 16),\n    '8' + digest.slice(17, 20), digest.slice(20, 32)].join('-');\n}\n\nfunction geminiDemoCaseId(ownerChatId, sha256) {\n  const chat = id(ownerChatId);\n  return chat ? eventUuid(sha256('contracter:gemini-demo:v1:' + chat)) : null;\n}\n\nfunction demoQuestion(topic) {\n  return Object.hasOwn(DEMO_QUESTIONS, topic) ? DEMO_QUESTIONS[topic] : null;\n}\n\nfunction demoReply(caseId) {\n  return [\n    'Expediente de muestra ' + caseId,\n    'La compraventa ficticia contempla 120 cajas por $24,000 MXN y un plazo de pago de 30 días cuyo inicio es ambiguo.',\n    'Puedes hacer las consultas por separado con Gemini Free. Conserva esta referencia para los siguientes mensajes.',\n    ...Object.keys(DEMO_QUESTIONS).map(topic => '/pregunta ' + caseId + ' ' + topic),\n  ].join('\\n');\n}\n\nfunction requestIds(updateId, chat, sha256) {\n  if (!Number.isSafeInteger(updateId) || updateId < 0) return null;\n  const requestKey = 'contracter:telegram:' + chat + ':' + updateId;\n  return { owner_chat_id: chat, run_id: eventUuid(sha256(requestKey + ':run')),\n    case_id: eventUuid(sha256(requestKey + ':case')) };\n}\n\nfunction readForm(rest, workflow, attached) {\n  const boundary = attached ? rest.length : rest.indexOf('\\n---\\n');\n  if (boundary < 0) return null;\n  const document = attached ? null : rest.slice(boundary + 5).trim();\n  if (!attached && (!document || document.length > MAX_DOCUMENT_CHARS)) return null;\n  const fields = Object.create(null);\n  const accepted = ['empresa', 'contraparte', 'rol', 'objetivo', 'región',\n    'entidad', 'municipio', 'confirmo', 'pregunta', 'aclaración'];\n  for (const line of rest.slice(0, boundary).split('\\n')) {\n    const split = line.indexOf(':');\n    const key = line.slice(0, split).trim().toLocaleLowerCase('es-MX');\n    const value = line.slice(split + 1).trim();\n    if (split < 1 || !accepted.includes(key) || !value || Object.hasOwn(fields, key)) return null;\n    fields[key] = value;\n  }\n  if (!['empresa', 'contraparte', 'rol', 'objetivo', 'región'].every(key => fields[key])\n    || !/^(sí|si)$/i.test(fields.confirmo || '')) return null;\n  if (workflow === 'qa' && !fields.pregunta) return null;\n  if ((fields.aclaración?.length ?? 0) > 500) return null;\n  // Validate the attachment form before making a credentialed download.\n  if (attached && (\n    ['empresa', 'contraparte', 'rol'].some(key => fields[key].length > 200)\n    || fields.objetivo.length > 500 || fields.región.length > 120 || (fields.pregunta?.length ?? 0) > 600\n    || /TODO_|por confirmar|por definir/i.test(fields.región)\n    || (fields.entidad ? !/^(0[1-9]|[12]\\d|3[0-2])$/.test(fields.entidad) : !/^(federal|nacional)$/i.test(fields.región))\n    || (fields.municipio && (!fields.entidad || !/^\\d{3}$/.test(fields.municipio) || fields.municipio === '000'))\n  )) return null;\n  return {\n    workflow, ...(attached ? {} : { document }),\n    question: fields.pregunta,\n    ...(fields.aclaración ? { clarification: fields.aclaración } : {}),\n    context: {\n      our_party: fields.empresa, counterparty: fields.contraparte, our_role: fields.rol,\n      objectives: [fields.objetivo], confirmed: true,\n    },\n    jurisdiction: {\n      region: fields.región, entity_code: fields.entidad || null, municipality_code: fields.municipio || null,\n    },\n  };\n}\n\nfunction attachmentMetadata(file) {\n  if (typeof file?.file_name !== 'string' || !/\\.txt$/i.test(file.file_name)\n    || (file.mime_type !== undefined && (typeof file.mime_type !== 'string'\n      || !/^text\\/plain(?:;\\s*charset=utf-8)?$/i.test(file.mime_type)))\n    || typeof file.file_id !== 'string' || !/^[A-Za-z0-9_-]{1,512}$/.test(file.file_id)\n    || !Number.isSafeInteger(file.file_size) || file.file_size < 1 || file.file_size > MAX_ATTACHMENT_BYTES) return null;\n  return { file_id: file.file_id, file_size: file.file_size };\n}\n\nfunction telegramIngress(update, config, sha256) {\n  const owner = id(config.owner_user_id);\n  const ownerChat = id(config.owner_chat_id);\n  if (!owner || !ownerChat) return null;\n  const callback = update.callback_query;\n  const message = callback?.message || update.message;\n  const actor = id((callback?.from || message?.from)?.id);\n  const chat = id(message?.chat?.id);\n  if (message?.chat?.type !== 'private' || actor !== owner || chat !== ownerChat) return null;\n\n  const reply = text => ({ action: 'reply', chat_id: chat, text });\n  if (callback) {\n    if (typeof callback.id !== 'string' || !/^ca:[ar]:[a-f0-9]{32}$/.test(callback.data || '')) return null;\n    return { action: 'redeem', chat_id: chat, body: {\n      operation: 'redeem_approval',\n      callback_query: { id: callback.id, data: callback.data, from: { id: actor }, message: { chat: { id: chat } } },\n    } };\n  }\n  const attached = message.document !== undefined;\n  const content = attached ? message.caption : message.text;\n  if (attached && (message.media_group_id || message.forward_origin || message.forward_date)) return reply(attachmentInstructions);\n  if (typeof content !== 'string' || (attached && content.length > MAX_CAPTION_CHARS)) {\n    return reply(attached ? attachmentInstructions : instructions);\n  }\n  const text = content.replace(/\\r\\n?/g, '\\n').trim();\n  const match = /^\\/([a-z]+)(?:@ContracterExampleBot)?(?:[ \\t\\n]+([\\s\\S]*))?$/i.exec(text);\n  if (!match) return reply(attached ? attachmentInstructions : 'Usa /help para ver los comandos de Contracter.');\n  const command = match[1].toLowerCase();\n  const rest = (match[2] || '').trim();\n  const isAuditCommand = ['auditar', 'consulta', 'evaluar'].includes(command);\n  const evaluation = command === 'evaluar';\n  if (attached && command !== 'demo' && !isAuditCommand) return reply(attachmentInstructions);\n  if (command === 'start' || command === 'help') {\n    return reply('Contracter\\n/demo — abrir el expediente ficticio de Gemini Free\\n/pregunta UUID tema — consultar el mismo expediente de muestra\\n/auditar — auditoría completa\\n/consulta — consulta puntual\\n/evaluar — opciones para evaluar con datos ficticios\\n/estado — disponibilidad\\n/expediente UUID — estado de un caso\\n/revisar UUID — solicitar revisión humana autorizada');\n  }\n  if (command === 'estado') {\n    return reply('Envía /evaluar para ver las opciones con datos ficticios. Las solicitudes de auditoría y consulta con OpenAI requieren confirmar el uso de créditos.');\n  }\n  if (command === 'expediente' || command === 'revisar') {\n    if (!uuid.test(rest)) return reply('Incluye el UUID de tu expediente después del comando.');\n    if (rest.toLowerCase() === geminiDemoCaseId(chat, sha256)) {\n      return reply(command === 'expediente' ? demoReply(rest.toLowerCase()) : 'El expediente ficticio de la demo no se puede aprobar.');\n    }\n    return command === 'expediente'\n      ? { action: 'lookup', chat_id: chat, body: { operation: 'get_case', audience: 'telegram', case_id: rest, owner_chat_id: chat } }\n      : { action: 'issue', chat_id: chat, body: { operation: 'issue_approval', case_id: rest, chat_id: chat, approver_id: actor } };\n  }\n  if (command === 'demo' || command === 'pregunta') {\n    if (message.forward_origin || message.forward_date) return reply('Escribe el comando directamente en este chat para iniciar la solicitud.');\n    const caseId = geminiDemoCaseId(chat, sha256);\n    if (command === 'demo') {\n      if (attached) {\n        const attachment = attachmentMetadata(message.document);\n        if (rest || !attachment) return reply(demoAttachmentInstruction);\n        return { action: 'download_attachment', chat_id: chat, demo_case_id: caseId, attachment };\n      }\n      if (rest && rest.replace(/^\\uFEFF/, '').trim() !== evaluationFixture().document) return reply(demoAttachmentInstruction);\n      return reply(demoReply(caseId));\n    }\n    const selection = /^(\\S+)[ \\t]+(entrega|pago|recepci[oó]n)$/i.exec(rest);\n    if (!selection || selection[1].toLowerCase() !== caseId) {\n      return reply('Usa /demo para obtener la referencia de tu expediente de muestra y los comandos de entrega, pago o recepción.');\n    }\n    const ids = requestIds(update.update_id, chat, sha256);\n    if (!ids) return null;\n    const topic = selection[2].toLowerCase().replace('ó', 'o');\n    return { action: 'audit_gemini', chat_id: chat, input: {\n      workflow: 'qa', demo_case_id: caseId, demo_topic: topic, synthetic: true,\n      owner_chat_id: ids.owner_chat_id, run_id: ids.run_id,\n    } };\n  }\n  if (!isAuditCommand) return reply('Usa /help para ver los comandos de Contracter.');\n  if (message.forward_origin || message.forward_date) return reply('Escribe el comando directamente en este chat para iniciar la solicitud.');\n  if (evaluation) {\n    if (!rest) return reply(evaluationOptions);\n    const provider = /^(gemini|openai|gateway)(?=$|\\s)/i.exec(rest)?.[1].toLowerCase();\n    if (provider) {\n      const selection = rest.toLowerCase();\n      const isConsultation = selection === 'gemini consulta';\n      if (attached || !(selection === provider || isConsultation || selection === 'openai confirmar')) {\n        return reply('La prueba con proveedor usa un contrato ficticio incluido. Envía el comando solo, sin contrato ni adjuntos.\\n' + evaluationOptions);\n      }\n      if (provider === 'gateway') return reply('La alternativa Gateway está pendiente de configuración y verificación. Puedes consultar las opciones con /evaluar.');\n      if (selection === 'openai') return reply(directOpenAIWarning + ' Para ejecutar la prueba fija, envía /evaluar openai confirmar.');\n      const ids = requestIds(update.update_id, chat, sha256);\n      if (!ids) return null;\n      return { action: provider === 'gemini' ? 'audit_gemini' : 'audit_openai', chat_id: chat,\n        input: { workflow: isConsultation ? 'qa' : 'full', ...evaluationFixture(), synthetic: true, ...ids } };\n    }\n  }\n  const confirmation = /^confirmar(?:\\n|$)/i.exec(rest);\n  const guide = attached ? attachmentInstructions : instructions;\n  if (!confirmation) {\n    return reply(directOpenAIWarning + ' Inicia el mensaje con /' + command + ' confirmar y vuelve a incluir el formulario.'\n      + '\\n\\n' + (evaluation ? guide.replace('/auditar confirmar', '/evaluar confirmar') : guide));\n  }\n  const input = readForm(rest.slice(confirmation[0].length), command === 'consulta' ? 'qa' : 'full', attached);\n  if (!input) {\n    return reply(evaluation ? guide.replace('/auditar confirmar', '/evaluar confirmar') : guide);\n  }\n  const attachment = attached ? attachmentMetadata(message.document) : null;\n  if (attached && !attachment) {\n    return reply('El adjunto debe ser un .txt UTF-8 con tamaño informado por Telegram de hasta 36 000 bytes.');\n  }\n  const ids = requestIds(update.update_id, chat, sha256);\n  if (!ids) return null;\n  return { action: attached ? 'download_attachment' : 'audit', chat_id: chat, input: {\n    ...input, ...(evaluation ? { synthetic: true } : {}),\n    ...ids,\n  }, ...(attachment ? { attachment } : {}) };\n}\n\nfunction telegramAttachment(command, bytes) {\n  if (command?.action !== 'download_attachment') return null;\n  const demo = typeof command.demo_case_id === 'string' && uuid.test(command.demo_case_id);\n  const reject = () => ({ action: 'reply', chat_id: command.chat_id,\n    text: demo ? demoAttachmentInstruction\n      : 'El archivo debe ser texto UTF-8 legible de hasta 12 000 caracteres y 1500 líneas. Guarda el .txt y vuelve a adjuntarlo con el pie del mensaje.' });\n  if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MAX_ATTACHMENT_BYTES\n    || bytes.length !== command.attachment?.file_size) return reject();\n\n  const text = bytes.toString('utf8');\n  // Round-trip rejects invalid UTF-8 that Buffer.toString would otherwise replace.\n  if (!Buffer.from(text, 'utf8').equals(bytes) || /[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/.test(text)) return reject();\n  const document = text.replace(/^\\uFEFF/, '').replace(/\\r\\n?/g, '\\n').trim();\n  if (!document || document.startsWith('%PDF-') || document.length > MAX_DOCUMENT_CHARS\n    || document.split('\\n').length > 1500) return reject();\n  if (demo) return document === evaluationFixture().document\n    ? { action: 'reply', chat_id: command.chat_id, text: demoReply(command.demo_case_id) } : reject();\n  return { action: 'audit', chat_id: command.chat_id, input: { ...command.input, document } };\n}\n\nfunction auditReply(result, allowedQuestions = [], inputAction = null, demoCaseId = null) {\n  switch (result?.status) {\n    case 'AWAITING_HUMAN':\n      if (result.synthetic === true) {\n        return 'Evaluación con datos ficticios. Expediente ' + result.case_id + '\\nLa V2 está guardada sin opción de aprobación. Consulta el resumen con /expediente ' + result.case_id + '.';\n      }\n      return 'Expediente ' + result.case_id + '\\nV2 retenida para revisión humana. Usa /revisar ' + result.case_id + ' si tienes autorización.';\n    case 'QA_READY': {\n      const evaluation = result.synthetic === true || inputAction === 'audit_gemini' || inputAction === 'audit_openai';\n      const label = demoCaseId && uuid.test(demoCaseId) ? 'Expediente de muestra ' + demoCaseId + '\\n'\n        : evaluation ? 'Evaluación con datos ficticios.\\n' : '';\n      return (label + String(result.answer || 'Consulta registrada.')).slice(0, 3500);\n    }\n    case 'NO_REWRITE_REQUIRED':\n      return 'Los auditores coincidieron en conservar el texto. La explicación quedó registrada para revisión humana.';\n    case 'CONTEXT_REQUIRED': {\n      const questions = Array.isArray(result.questions)\n        ? [...new Set(result.questions)].filter(question => allowedQuestions.includes(question)).slice(0, 5)\n        : [];\n      if (inputAction === 'audit_gemini' || inputAction === 'audit_openai') {\n        return ['La prueba fija quedó retenida porque el flujo pidió aclaraciones.', ...questions,\n          'El equipo de Contracter debe revisar el contrato de muestra antes de repetir la prueba.'].join('\\n');\n      }\n      if (!questions.length) return result.synthetic === true ? instructions.replace('/auditar confirmar', '/evaluar confirmar') : instructions;\n      return [\n        'El expediente necesita estas aclaraciones.',\n        ...questions.map((question, index) => (index + 1) + '. ' + question),\n        result.synthetic === true\n          ? 'Reenvía el contrato y el formulario con /evaluar confirmar. Corrige los campos que correspondan.'\n          : 'Reenvía el contrato y el formulario en un mensaje nuevo. Corrige los campos que correspondan.',\n        clarificationInstruction,\n      ].join('\\n');\n    }\n    case 'DUPLICATE':\n      return 'Esta solicitud ya fue registrada.';\n    case 'STORE_UNAVAILABLE':\n      return 'El servicio de expedientes no pudo confirmar el guardado. Revisa el estado de la ejecución antes de reenviar.';\n    case 'HELD':\n      if (result.reason === 'PROVIDER_CREDIT_EXHAUSTED') return 'Auditoría retenida: OpenAI informó saldo de créditos agotado.';\n      if (result.reason === 'PROVIDER_CAPACITY_UNAVAILABLE') return 'Prueba retenida por saturación de Gemini. Puedes volver a intentarlo más tarde con /evaluar.';\n      if (result.reason === 'PROVIDER_QUOTA_EXHAUSTED' && inputAction === 'audit_gemini') {\n        return 'Prueba retenida: Gemini informó que alcanzó su cuota. Puedes reintentar cuando se renueve la cuota o consultar /evaluar para ver otras opciones.';\n      }\n      if (result.reason === 'LEGAL_SEARCH_UNAVAILABLE') return 'No se pudo consultar el buscador jurídico. La solicitud quedó retenida.';\n      if (/LEGAL|SOURCE|GROUNDING/.test(result.reason || '')) {\n        return 'Auditoría retenida: hacen falta fuentes jurídicas revisadas para el ámbito y la fecha del contrato.';\n      }\n      return 'Auditoría retenida. Código: ' + String(result.reason || 'CONTROL_PENDIENTE').slice(0, 90);\n    default:\n      return 'El servicio de auditoría aún no está disponible.';\n  }\n}\n\nreturn { telegramIngress };\n})();\nconst { createHash } = require(\"crypto\");\nconst settings = {\"owner_chat_id\":\"TODO_TELEGRAM_CHAT_ID\",\"owner_user_id\":\"TODO_TELEGRAM_OWNER_ID\"};\nconst command = telegramIngress($input.first().json, settings, value => createHash(\"sha256\").update(value).digest(\"hex\"));\nif (command?.action === 'download_attachment' && typeof command.demo_case_id !== 'string') {\n  return [{json:{action:'reply',chat_id:command.chat_id,text:'Envía el .txt de muestra con /demo para usar Gemini Free.'}}];\n}\nreturn command ? [{json:command}] : [];"
+      }
+    },
+    {
+      "id": "90d85134-c87c-4e2f-a605-3945c7ea10b1",
+      "name": "¿Descargar adjunto?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3f24e323-17b6-4961-b2e2-874fef5cec6d",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "download_attachment",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b8037f3d-a3cb-42dc-af51-0545d0937ae5",
+      "name": "Descargar .txt privado",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        -210
+      ],
+      "parameters": {
+        "resource": "file",
+        "operation": "get",
+        "fileId": "={{ $json.attachment.file_id }}",
+        "download": true,
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "name": "Contracter · Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "eb6a2e4c-d5d6-4dc5-bc28-39e754c97a25",
+      "name": "Validar y extraer texto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        -210
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { telegramAttachment } = (() => {\nconst id = value => /^[1-9][0-9]{0,17}$/.test(String(value ?? '')) ? String(value) : null;\nconst uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;\nconst MAX_DOCUMENT_CHARS = 12_000;\nconst MAX_ATTACHMENT_BYTES = 36_000;\nconst MAX_CAPTION_CHARS = 1_024;\nconst clarificationInstruction = 'Agrega Aclaración: seguida de tus respuestas en una sola línea de hasta 500 caracteres.';\nconst directOpenAIWarning = 'Esta ruta utiliza OpenAI y puede consumir créditos.';\nconst evaluationInstruction = 'Para ver las opciones de evaluación con datos ficticios, usa /evaluar.';\nconst DEMO_QUESTIONS = Object.freeze({\n  entrega: '¿Qué ambigüedad tiene el plazo de entrega y qué debe aclarar la compradora?',\n  pago: '¿Qué ambigüedad tiene el inicio del plazo de pago de 30 días y qué debe aclarar la compradora?',\n  recepcion: '¿Cómo debería documentarse la recepción parcial y qué falta precisar para reportar diferencias de cantidad?',\n});\nconst demoAttachmentInstruction = 'La demo admite exclusivamente el .txt de la muestra de Contracter. Envía /demo para seleccionarla directamente.';\nconst evaluationOptions = [\n  'Evaluación de Contracter con un contrato ficticio incluido.',\n  '/demo — abrir la muestra y recibir comandos para consultar distintos temas.',\n  '/evaluar gemini consulta — ejecutar una consulta de muestra con Gemini.',\n  '/evaluar gemini — ejecutar la auditoría completa con Gemini.',\n  '/evaluar openai — consultar cómo confirmar la prueba fija con OpenAI.',\n  '/evaluar gateway — consultar el estado de la alternativa Gateway.',\n  '/evaluar confirmar — usar tu propio contrato ficticio con OpenAI. Incluye el formulario en el mismo mensaje.',\n].join('\\n');\n\nconst contextExample = [\n  '/auditar confirmar',\n  'Empresa: nuestra parte',\n  'Contraparte: la otra parte',\n  'Rol: comprador, proveedor u otro',\n  'Objetivo: qué necesitas proteger o verificar',\n  'Región: Federal',\n  'Confirmo: sí',\n];\nconst jurisdictionInstruction = 'Si aplica una entidad o municipio, indica Región y agrega Entidad (clave de 2 dígitos) y Municipio (clave de 3 dígitos).';\nconst attachmentInstructions = [\n  'Adjunta un solo archivo .txt guardado como UTF-8 y escribe estos datos en el pie del mismo mensaje.',\n  ...contextExample,\n  'Para una consulta puntual usa /consulta confirmar y agrega Pregunta: … al pie.',\n  evaluationInstruction,\n  clarificationInstruction,\n  jurisdictionInstruction,\n].join('\\n');\nconst instructions = [\n  'Envía el texto del contrato en el mismo mensaje, con estos datos:',\n  ...contextExample,\n  '---',\n  'Pega aquí el texto del contrato.',\n  'Para una consulta puntual usa /consulta confirmar y agrega la línea Pregunta: … antes de ---.',\n  evaluationInstruction,\n  clarificationInstruction,\n  jurisdictionInstruction,\n  'También puedes adjuntar un .txt UTF-8. Escribe el comando y los datos en el pie del mismo mensaje, sin --- ni texto del contrato en el pie.',\n].join('\\n');\n\nfunction evaluationFixture() {\n  return {\n    title: 'Compraventa mercantil de evaluación',\n    document: [\n      'CONTRATO FICTICIO DE COMPRAVENTA MERCANTIL',\n      '1. Objeto. La Proveedora de muestra vende a la Compradora de muestra 120 cajas de material de empaque por un precio total de $24,000 MXN, más los impuestos aplicables.',\n      '2. Entrega. La Proveedora entregará los productos durante el próximo mes en el almacén de la Compradora. Puede dividir la entrega según su disponibilidad. La Compradora recibirá los productos cuando lleguen y la Proveedora dará por cumplida su obligación de entrega.',\n      '3. Pago. La Compradora pagará en un plazo de 30 días. El plazo comenzará en cuanto la operación esté procesada. El precio se pagará mediante transferencia bancaria.',\n      '4. Recepción. Las partes conservarán los comprobantes de entrega. En caso de diferencias de cantidad, la Compradora las comunicará a la Proveedora para su revisión.',\n    ].join('\\n\\n'),\n    context: {\n      our_party: 'Compradora de muestra', counterparty: 'Proveedora de muestra', our_role: 'comprador',\n      objectives: ['Precisar los plazos de entrega, documentar la recepción parcial y definir el inicio del plazo de pago.'],\n      confirmed: true,\n    },\n    clarification: 'Las partes acuerdan entregar 60 cajas dentro de los primeros diez días naturales posteriores a la firma y 60 cajas dentro de los siguientes diez días. Cada recepción parcial debe documentar la cantidad recibida. El plazo de pago empieza al recibirse de conformidad las 120 cajas y la factura correspondiente.',\n    jurisdiction: { region: 'Federal', entity_code: null, municipality_code: null },\n  };\n}\n\nfunction eventUuid(digest) {\n  return [digest.slice(0, 8), digest.slice(8, 12), '8' + digest.slice(13, 16),\n    '8' + digest.slice(17, 20), digest.slice(20, 32)].join('-');\n}\n\nfunction geminiDemoCaseId(ownerChatId, sha256) {\n  const chat = id(ownerChatId);\n  return chat ? eventUuid(sha256('contracter:gemini-demo:v1:' + chat)) : null;\n}\n\nfunction demoQuestion(topic) {\n  return Object.hasOwn(DEMO_QUESTIONS, topic) ? DEMO_QUESTIONS[topic] : null;\n}\n\nfunction demoReply(caseId) {\n  return [\n    'Expediente de muestra ' + caseId,\n    'La compraventa ficticia contempla 120 cajas por $24,000 MXN y un plazo de pago de 30 días cuyo inicio es ambiguo.',\n    'Puedes hacer las consultas por separado con Gemini Free. Conserva esta referencia para los siguientes mensajes.',\n    ...Object.keys(DEMO_QUESTIONS).map(topic => '/pregunta ' + caseId + ' ' + topic),\n  ].join('\\n');\n}\n\nfunction requestIds(updateId, chat, sha256) {\n  if (!Number.isSafeInteger(updateId) || updateId < 0) return null;\n  const requestKey = 'contracter:telegram:' + chat + ':' + updateId;\n  return { owner_chat_id: chat, run_id: eventUuid(sha256(requestKey + ':run')),\n    case_id: eventUuid(sha256(requestKey + ':case')) };\n}\n\nfunction readForm(rest, workflow, attached) {\n  const boundary = attached ? rest.length : rest.indexOf('\\n---\\n');\n  if (boundary < 0) return null;\n  const document = attached ? null : rest.slice(boundary + 5).trim();\n  if (!attached && (!document || document.length > MAX_DOCUMENT_CHARS)) return null;\n  const fields = Object.create(null);\n  const accepted = ['empresa', 'contraparte', 'rol', 'objetivo', 'región',\n    'entidad', 'municipio', 'confirmo', 'pregunta', 'aclaración'];\n  for (const line of rest.slice(0, boundary).split('\\n')) {\n    const split = line.indexOf(':');\n    const key = line.slice(0, split).trim().toLocaleLowerCase('es-MX');\n    const value = line.slice(split + 1).trim();\n    if (split < 1 || !accepted.includes(key) || !value || Object.hasOwn(fields, key)) return null;\n    fields[key] = value;\n  }\n  if (!['empresa', 'contraparte', 'rol', 'objetivo', 'región'].every(key => fields[key])\n    || !/^(sí|si)$/i.test(fields.confirmo || '')) return null;\n  if (workflow === 'qa' && !fields.pregunta) return null;\n  if ((fields.aclaración?.length ?? 0) > 500) return null;\n  // Validate the attachment form before making a credentialed download.\n  if (attached && (\n    ['empresa', 'contraparte', 'rol'].some(key => fields[key].length > 200)\n    || fields.objetivo.length > 500 || fields.región.length > 120 || (fields.pregunta?.length ?? 0) > 600\n    || /TODO_|por confirmar|por definir/i.test(fields.región)\n    || (fields.entidad ? !/^(0[1-9]|[12]\\d|3[0-2])$/.test(fields.entidad) : !/^(federal|nacional)$/i.test(fields.región))\n    || (fields.municipio && (!fields.entidad || !/^\\d{3}$/.test(fields.municipio) || fields.municipio === '000'))\n  )) return null;\n  return {\n    workflow, ...(attached ? {} : { document }),\n    question: fields.pregunta,\n    ...(fields.aclaración ? { clarification: fields.aclaración } : {}),\n    context: {\n      our_party: fields.empresa, counterparty: fields.contraparte, our_role: fields.rol,\n      objectives: [fields.objetivo], confirmed: true,\n    },\n    jurisdiction: {\n      region: fields.región, entity_code: fields.entidad || null, municipality_code: fields.municipio || null,\n    },\n  };\n}\n\nfunction attachmentMetadata(file) {\n  if (typeof file?.file_name !== 'string' || !/\\.txt$/i.test(file.file_name)\n    || (file.mime_type !== undefined && (typeof file.mime_type !== 'string'\n      || !/^text\\/plain(?:;\\s*charset=utf-8)?$/i.test(file.mime_type)))\n    || typeof file.file_id !== 'string' || !/^[A-Za-z0-9_-]{1,512}$/.test(file.file_id)\n    || !Number.isSafeInteger(file.file_size) || file.file_size < 1 || file.file_size > MAX_ATTACHMENT_BYTES) return null;\n  return { file_id: file.file_id, file_size: file.file_size };\n}\n\nfunction telegramIngress(update, config, sha256) {\n  const owner = id(config.owner_user_id);\n  const ownerChat = id(config.owner_chat_id);\n  if (!owner || !ownerChat) return null;\n  const callback = update.callback_query;\n  const message = callback?.message || update.message;\n  const actor = id((callback?.from || message?.from)?.id);\n  const chat = id(message?.chat?.id);\n  if (message?.chat?.type !== 'private' || actor !== owner || chat !== ownerChat) return null;\n\n  const reply = text => ({ action: 'reply', chat_id: chat, text });\n  if (callback) {\n    if (typeof callback.id !== 'string' || !/^ca:[ar]:[a-f0-9]{32}$/.test(callback.data || '')) return null;\n    return { action: 'redeem', chat_id: chat, body: {\n      operation: 'redeem_approval',\n      callback_query: { id: callback.id, data: callback.data, from: { id: actor }, message: { chat: { id: chat } } },\n    } };\n  }\n  const attached = message.document !== undefined;\n  const content = attached ? message.caption : message.text;\n  if (attached && (message.media_group_id || message.forward_origin || message.forward_date)) return reply(attachmentInstructions);\n  if (typeof content !== 'string' || (attached && content.length > MAX_CAPTION_CHARS)) {\n    return reply(attached ? attachmentInstructions : instructions);\n  }\n  const text = content.replace(/\\r\\n?/g, '\\n').trim();\n  const match = /^\\/([a-z]+)(?:@ContracterExampleBot)?(?:[ \\t\\n]+([\\s\\S]*))?$/i.exec(text);\n  if (!match) return reply(attached ? attachmentInstructions : 'Usa /help para ver los comandos de Contracter.');\n  const command = match[1].toLowerCase();\n  const rest = (match[2] || '').trim();\n  const isAuditCommand = ['auditar', 'consulta', 'evaluar'].includes(command);\n  const evaluation = command === 'evaluar';\n  if (attached && command !== 'demo' && !isAuditCommand) return reply(attachmentInstructions);\n  if (command === 'start' || command === 'help') {\n    return reply('Contracter\\n/demo — abrir el expediente ficticio de Gemini Free\\n/pregunta UUID tema — consultar el mismo expediente de muestra\\n/auditar — auditoría completa\\n/consulta — consulta puntual\\n/evaluar — opciones para evaluar con datos ficticios\\n/estado — disponibilidad\\n/expediente UUID — estado de un caso\\n/revisar UUID — solicitar revisión humana autorizada');\n  }\n  if (command === 'estado') {\n    return reply('Envía /evaluar para ver las opciones con datos ficticios. Las solicitudes de auditoría y consulta con OpenAI requieren confirmar el uso de créditos.');\n  }\n  if (command === 'expediente' || command === 'revisar') {\n    if (!uuid.test(rest)) return reply('Incluye el UUID de tu expediente después del comando.');\n    if (rest.toLowerCase() === geminiDemoCaseId(chat, sha256)) {\n      return reply(command === 'expediente' ? demoReply(rest.toLowerCase()) : 'El expediente ficticio de la demo no se puede aprobar.');\n    }\n    return command === 'expediente'\n      ? { action: 'lookup', chat_id: chat, body: { operation: 'get_case', audience: 'telegram', case_id: rest, owner_chat_id: chat } }\n      : { action: 'issue', chat_id: chat, body: { operation: 'issue_approval', case_id: rest, chat_id: chat, approver_id: actor } };\n  }\n  if (command === 'demo' || command === 'pregunta') {\n    if (message.forward_origin || message.forward_date) return reply('Escribe el comando directamente en este chat para iniciar la solicitud.');\n    const caseId = geminiDemoCaseId(chat, sha256);\n    if (command === 'demo') {\n      if (attached) {\n        const attachment = attachmentMetadata(message.document);\n        if (rest || !attachment) return reply(demoAttachmentInstruction);\n        return { action: 'download_attachment', chat_id: chat, demo_case_id: caseId, attachment };\n      }\n      if (rest && rest.replace(/^\\uFEFF/, '').trim() !== evaluationFixture().document) return reply(demoAttachmentInstruction);\n      return reply(demoReply(caseId));\n    }\n    const selection = /^(\\S+)[ \\t]+(entrega|pago|recepci[oó]n)$/i.exec(rest);\n    if (!selection || selection[1].toLowerCase() !== caseId) {\n      return reply('Usa /demo para obtener la referencia de tu expediente de muestra y los comandos de entrega, pago o recepción.');\n    }\n    const ids = requestIds(update.update_id, chat, sha256);\n    if (!ids) return null;\n    const topic = selection[2].toLowerCase().replace('ó', 'o');\n    return { action: 'audit_gemini', chat_id: chat, input: {\n      workflow: 'qa', demo_case_id: caseId, demo_topic: topic, synthetic: true,\n      owner_chat_id: ids.owner_chat_id, run_id: ids.run_id,\n    } };\n  }\n  if (!isAuditCommand) return reply('Usa /help para ver los comandos de Contracter.');\n  if (message.forward_origin || message.forward_date) return reply('Escribe el comando directamente en este chat para iniciar la solicitud.');\n  if (evaluation) {\n    if (!rest) return reply(evaluationOptions);\n    const provider = /^(gemini|openai|gateway)(?=$|\\s)/i.exec(rest)?.[1].toLowerCase();\n    if (provider) {\n      const selection = rest.toLowerCase();\n      const isConsultation = selection === 'gemini consulta';\n      if (attached || !(selection === provider || isConsultation || selection === 'openai confirmar')) {\n        return reply('La prueba con proveedor usa un contrato ficticio incluido. Envía el comando solo, sin contrato ni adjuntos.\\n' + evaluationOptions);\n      }\n      if (provider === 'gateway') return reply('La alternativa Gateway está pendiente de configuración y verificación. Puedes consultar las opciones con /evaluar.');\n      if (selection === 'openai') return reply(directOpenAIWarning + ' Para ejecutar la prueba fija, envía /evaluar openai confirmar.');\n      const ids = requestIds(update.update_id, chat, sha256);\n      if (!ids) return null;\n      return { action: provider === 'gemini' ? 'audit_gemini' : 'audit_openai', chat_id: chat,\n        input: { workflow: isConsultation ? 'qa' : 'full', ...evaluationFixture(), synthetic: true, ...ids } };\n    }\n  }\n  const confirmation = /^confirmar(?:\\n|$)/i.exec(rest);\n  const guide = attached ? attachmentInstructions : instructions;\n  if (!confirmation) {\n    return reply(directOpenAIWarning + ' Inicia el mensaje con /' + command + ' confirmar y vuelve a incluir el formulario.'\n      + '\\n\\n' + (evaluation ? guide.replace('/auditar confirmar', '/evaluar confirmar') : guide));\n  }\n  const input = readForm(rest.slice(confirmation[0].length), command === 'consulta' ? 'qa' : 'full', attached);\n  if (!input) {\n    return reply(evaluation ? guide.replace('/auditar confirmar', '/evaluar confirmar') : guide);\n  }\n  const attachment = attached ? attachmentMetadata(message.document) : null;\n  if (attached && !attachment) {\n    return reply('El adjunto debe ser un .txt UTF-8 con tamaño informado por Telegram de hasta 36 000 bytes.');\n  }\n  const ids = requestIds(update.update_id, chat, sha256);\n  if (!ids) return null;\n  return { action: attached ? 'download_attachment' : 'audit', chat_id: chat, input: {\n    ...input, ...(evaluation ? { synthetic: true } : {}),\n    ...ids,\n  }, ...(attachment ? { attachment } : {}) };\n}\n\nfunction telegramAttachment(command, bytes) {\n  if (command?.action !== 'download_attachment') return null;\n  const demo = typeof command.demo_case_id === 'string' && uuid.test(command.demo_case_id);\n  const reject = () => ({ action: 'reply', chat_id: command.chat_id,\n    text: demo ? demoAttachmentInstruction\n      : 'El archivo debe ser texto UTF-8 legible de hasta 12 000 caracteres y 1500 líneas. Guarda el .txt y vuelve a adjuntarlo con el pie del mensaje.' });\n  if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MAX_ATTACHMENT_BYTES\n    || bytes.length !== command.attachment?.file_size) return reject();\n\n  const text = bytes.toString('utf8');\n  // Round-trip rejects invalid UTF-8 that Buffer.toString would otherwise replace.\n  if (!Buffer.from(text, 'utf8').equals(bytes) || /[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/.test(text)) return reject();\n  const document = text.replace(/^\\uFEFF/, '').replace(/\\r\\n?/g, '\\n').trim();\n  if (!document || document.startsWith('%PDF-') || document.length > MAX_DOCUMENT_CHARS\n    || document.split('\\n').length > 1500) return reject();\n  if (demo) return document === evaluationFixture().document\n    ? { action: 'reply', chat_id: command.chat_id, text: demoReply(command.demo_case_id) } : reject();\n  return { action: 'audit', chat_id: command.chat_id, input: { ...command.input, document } };\n}\n\nfunction auditReply(result, allowedQuestions = [], inputAction = null, demoCaseId = null) {\n  switch (result?.status) {\n    case 'AWAITING_HUMAN':\n      if (result.synthetic === true) {\n        return 'Evaluación con datos ficticios. Expediente ' + result.case_id + '\\nLa V2 está guardada sin opción de aprobación. Consulta el resumen con /expediente ' + result.case_id + '.';\n      }\n      return 'Expediente ' + result.case_id + '\\nV2 retenida para revisión humana. Usa /revisar ' + result.case_id + ' si tienes autorización.';\n    case 'QA_READY': {\n      const evaluation = result.synthetic === true || inputAction === 'audit_gemini' || inputAction === 'audit_openai';\n      const label = demoCaseId && uuid.test(demoCaseId) ? 'Expediente de muestra ' + demoCaseId + '\\n'\n        : evaluation ? 'Evaluación con datos ficticios.\\n' : '';\n      return (label + String(result.answer || 'Consulta registrada.')).slice(0, 3500);\n    }\n    case 'NO_REWRITE_REQUIRED':\n      return 'Los auditores coincidieron en conservar el texto. La explicación quedó registrada para revisión humana.';\n    case 'CONTEXT_REQUIRED': {\n      const questions = Array.isArray(result.questions)\n        ? [...new Set(result.questions)].filter(question => allowedQuestions.includes(question)).slice(0, 5)\n        : [];\n      if (inputAction === 'audit_gemini' || inputAction === 'audit_openai') {\n        return ['La prueba fija quedó retenida porque el flujo pidió aclaraciones.', ...questions,\n          'El equipo de Contracter debe revisar el contrato de muestra antes de repetir la prueba.'].join('\\n');\n      }\n      if (!questions.length) return result.synthetic === true ? instructions.replace('/auditar confirmar', '/evaluar confirmar') : instructions;\n      return [\n        'El expediente necesita estas aclaraciones.',\n        ...questions.map((question, index) => (index + 1) + '. ' + question),\n        result.synthetic === true\n          ? 'Reenvía el contrato y el formulario con /evaluar confirmar. Corrige los campos que correspondan.'\n          : 'Reenvía el contrato y el formulario en un mensaje nuevo. Corrige los campos que correspondan.',\n        clarificationInstruction,\n      ].join('\\n');\n    }\n    case 'DUPLICATE':\n      return 'Esta solicitud ya fue registrada.';\n    case 'STORE_UNAVAILABLE':\n      return 'El servicio de expedientes no pudo confirmar el guardado. Revisa el estado de la ejecución antes de reenviar.';\n    case 'HELD':\n      if (result.reason === 'PROVIDER_CREDIT_EXHAUSTED') return 'Auditoría retenida: OpenAI informó saldo de créditos agotado.';\n      if (result.reason === 'PROVIDER_CAPACITY_UNAVAILABLE') return 'Prueba retenida por saturación de Gemini. Puedes volver a intentarlo más tarde con /evaluar.';\n      if (result.reason === 'PROVIDER_QUOTA_EXHAUSTED' && inputAction === 'audit_gemini') {\n        return 'Prueba retenida: Gemini informó que alcanzó su cuota. Puedes reintentar cuando se renueve la cuota o consultar /evaluar para ver otras opciones.';\n      }\n      if (result.reason === 'LEGAL_SEARCH_UNAVAILABLE') return 'No se pudo consultar el buscador jurídico. La solicitud quedó retenida.';\n      if (/LEGAL|SOURCE|GROUNDING/.test(result.reason || '')) {\n        return 'Auditoría retenida: hacen falta fuentes jurídicas revisadas para el ámbito y la fecha del contrato.';\n      }\n      return 'Auditoría retenida. Código: ' + String(result.reason || 'CONTROL_PENDIENTE').slice(0, 90);\n    default:\n      return 'El servicio de auditoría aún no está disponible.';\n  }\n}\n\nreturn { telegramAttachment };\n})();\nconst command = $(\"Validar entrada Telegram\").itemMatching(0).json;\nlet bytes;\ntry {\n  if ($input.first().binary?.data) bytes = await this.helpers.getBinaryDataBuffer(0, \"data\");\n} catch { /* Drop the native download error, including any URL or file metadata. */ }\nconst result = telegramAttachment(command, bytes);\nreturn result ? [{json:result}] : [];"
+      }
+    },
+    {
+      "id": "d19d8fe7-2036-4409-a764-ad522b4f57b5",
+      "name": "¿Gemini Free?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2fecf31d-dc1e-464c-aa67-822ab232935b",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "audit_gemini",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "4445ebab-6ca1-4d67-b5f9-a8567a5da881",
+      "name": "Entrada ficticia Gemini",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        -430
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:$input.first().json.input}];"
+      }
+    },
+    {
+      "id": "189dba01-e935-4534-a1b0-c98fc4921056",
+      "name": "Ejecutar agentes Gemini",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1680,
+        -430
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TODO_WORKFLOW_ID"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "4f7a17ff-e090-4c96-a640-2901dd87d4ff",
+      "name": "¿Auditoría o consulta?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "88a4c7c6-0cf0-44da-8cc9-96b261f5fbe7",
+              "leftValue": "={{ [\"audit\",\"audit_openai\"].includes($json.action) ? \"audit\" : $json.action }}",
+              "rightValue": "audit",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "44d790ae-f568-4abf-a564-f1f2cdc5299f",
+      "name": "Disponibilidad de OpenAI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        -180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:{chat_id:$input.first().json.chat_id,text:\"OpenAI directo puede consumir créditos y aún no está disponible en este bot. Usa /demo para la evaluación con Gemini Free.\"}}];"
+      }
+    },
+    {
+      "id": "4c0b6d5f-6634-4d9d-bb38-046d4fea0582",
+      "name": "Redactar respuesta de auditoría",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        -180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { auditReply } = (() => {\nconst id = value => /^[1-9][0-9]{0,17}$/.test(String(value ?? '')) ? String(value) : null;\nconst uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;\nconst MAX_DOCUMENT_CHARS = 12_000;\nconst MAX_ATTACHMENT_BYTES = 36_000;\nconst MAX_CAPTION_CHARS = 1_024;\nconst clarificationInstruction = 'Agrega Aclaración: seguida de tus respuestas en una sola línea de hasta 500 caracteres.';\nconst directOpenAIWarning = 'Esta ruta utiliza OpenAI y puede consumir créditos.';\nconst evaluationInstruction = 'Para ver las opciones de evaluación con datos ficticios, usa /evaluar.';\nconst DEMO_QUESTIONS = Object.freeze({\n  entrega: '¿Qué ambigüedad tiene el plazo de entrega y qué debe aclarar la compradora?',\n  pago: '¿Qué ambigüedad tiene el inicio del plazo de pago de 30 días y qué debe aclarar la compradora?',\n  recepcion: '¿Cómo debería documentarse la recepción parcial y qué falta precisar para reportar diferencias de cantidad?',\n});\nconst demoAttachmentInstruction = 'La demo admite exclusivamente el .txt de la muestra de Contracter. Envía /demo para seleccionarla directamente.';\nconst evaluationOptions = [\n  'Evaluación de Contracter con un contrato ficticio incluido.',\n  '/demo — abrir la muestra y recibir comandos para consultar distintos temas.',\n  '/evaluar gemini consulta — ejecutar una consulta de muestra con Gemini.',\n  '/evaluar gemini — ejecutar la auditoría completa con Gemini.',\n  '/evaluar openai — consultar cómo confirmar la prueba fija con OpenAI.',\n  '/evaluar gateway — consultar el estado de la alternativa Gateway.',\n  '/evaluar confirmar — usar tu propio contrato ficticio con OpenAI. Incluye el formulario en el mismo mensaje.',\n].join('\\n');\n\nconst contextExample = [\n  '/auditar confirmar',\n  'Empresa: nuestra parte',\n  'Contraparte: la otra parte',\n  'Rol: comprador, proveedor u otro',\n  'Objetivo: qué necesitas proteger o verificar',\n  'Región: Federal',\n  'Confirmo: sí',\n];\nconst jurisdictionInstruction = 'Si aplica una entidad o municipio, indica Región y agrega Entidad (clave de 2 dígitos) y Municipio (clave de 3 dígitos).';\nconst attachmentInstructions = [\n  'Adjunta un solo archivo .txt guardado como UTF-8 y escribe estos datos en el pie del mismo mensaje.',\n  ...contextExample,\n  'Para una consulta puntual usa /consulta confirmar y agrega Pregunta: … al pie.',\n  evaluationInstruction,\n  clarificationInstruction,\n  jurisdictionInstruction,\n].join('\\n');\nconst instructions = [\n  'Envía el texto del contrato en el mismo mensaje, con estos datos:',\n  ...contextExample,\n  '---',\n  'Pega aquí el texto del contrato.',\n  'Para una consulta puntual usa /consulta confirmar y agrega la línea Pregunta: … antes de ---.',\n  evaluationInstruction,\n  clarificationInstruction,\n  jurisdictionInstruction,\n  'También puedes adjuntar un .txt UTF-8. Escribe el comando y los datos en el pie del mismo mensaje, sin --- ni texto del contrato en el pie.',\n].join('\\n');\n\nfunction evaluationFixture() {\n  return {\n    title: 'Compraventa mercantil de evaluación',\n    document: [\n      'CONTRATO FICTICIO DE COMPRAVENTA MERCANTIL',\n      '1. Objeto. La Proveedora de muestra vende a la Compradora de muestra 120 cajas de material de empaque por un precio total de $24,000 MXN, más los impuestos aplicables.',\n      '2. Entrega. La Proveedora entregará los productos durante el próximo mes en el almacén de la Compradora. Puede dividir la entrega según su disponibilidad. La Compradora recibirá los productos cuando lleguen y la Proveedora dará por cumplida su obligación de entrega.',\n      '3. Pago. La Compradora pagará en un plazo de 30 días. El plazo comenzará en cuanto la operación esté procesada. El precio se pagará mediante transferencia bancaria.',\n      '4. Recepción. Las partes conservarán los comprobantes de entrega. En caso de diferencias de cantidad, la Compradora las comunicará a la Proveedora para su revisión.',\n    ].join('\\n\\n'),\n    context: {\n      our_party: 'Compradora de muestra', counterparty: 'Proveedora de muestra', our_role: 'comprador',\n      objectives: ['Precisar los plazos de entrega, documentar la recepción parcial y definir el inicio del plazo de pago.'],\n      confirmed: true,\n    },\n    clarification: 'Las partes acuerdan entregar 60 cajas dentro de los primeros diez días naturales posteriores a la firma y 60 cajas dentro de los siguientes diez días. Cada recepción parcial debe documentar la cantidad recibida. El plazo de pago empieza al recibirse de conformidad las 120 cajas y la factura correspondiente.',\n    jurisdiction: { region: 'Federal', entity_code: null, municipality_code: null },\n  };\n}\n\nfunction eventUuid(digest) {\n  return [digest.slice(0, 8), digest.slice(8, 12), '8' + digest.slice(13, 16),\n    '8' + digest.slice(17, 20), digest.slice(20, 32)].join('-');\n}\n\nfunction geminiDemoCaseId(ownerChatId, sha256) {\n  const chat = id(ownerChatId);\n  return chat ? eventUuid(sha256('contracter:gemini-demo:v1:' + chat)) : null;\n}\n\nfunction demoQuestion(topic) {\n  return Object.hasOwn(DEMO_QUESTIONS, topic) ? DEMO_QUESTIONS[topic] : null;\n}\n\nfunction demoReply(caseId) {\n  return [\n    'Expediente de muestra ' + caseId,\n    'La compraventa ficticia contempla 120 cajas por $24,000 MXN y un plazo de pago de 30 días cuyo inicio es ambiguo.',\n    'Puedes hacer las consultas por separado con Gemini Free. Conserva esta referencia para los siguientes mensajes.',\n    ...Object.keys(DEMO_QUESTIONS).map(topic => '/pregunta ' + caseId + ' ' + topic),\n  ].join('\\n');\n}\n\nfunction requestIds(updateId, chat, sha256) {\n  if (!Number.isSafeInteger(updateId) || updateId < 0) return null;\n  const requestKey = 'contracter:telegram:' + chat + ':' + updateId;\n  return { owner_chat_id: chat, run_id: eventUuid(sha256(requestKey + ':run')),\n    case_id: eventUuid(sha256(requestKey + ':case')) };\n}\n\nfunction readForm(rest, workflow, attached) {\n  const boundary = attached ? rest.length : rest.indexOf('\\n---\\n');\n  if (boundary < 0) return null;\n  const document = attached ? null : rest.slice(boundary + 5).trim();\n  if (!attached && (!document || document.length > MAX_DOCUMENT_CHARS)) return null;\n  const fields = Object.create(null);\n  const accepted = ['empresa', 'contraparte', 'rol', 'objetivo', 'región',\n    'entidad', 'municipio', 'confirmo', 'pregunta', 'aclaración'];\n  for (const line of rest.slice(0, boundary).split('\\n')) {\n    const split = line.indexOf(':');\n    const key = line.slice(0, split).trim().toLocaleLowerCase('es-MX');\n    const value = line.slice(split + 1).trim();\n    if (split < 1 || !accepted.includes(key) || !value || Object.hasOwn(fields, key)) return null;\n    fields[key] = value;\n  }\n  if (!['empresa', 'contraparte', 'rol', 'objetivo', 'región'].every(key => fields[key])\n    || !/^(sí|si)$/i.test(fields.confirmo || '')) return null;\n  if (workflow === 'qa' && !fields.pregunta) return null;\n  if ((fields.aclaración?.length ?? 0) > 500) return null;\n  // Validate the attachment form before making a credentialed download.\n  if (attached && (\n    ['empresa', 'contraparte', 'rol'].some(key => fields[key].length > 200)\n    || fields.objetivo.length > 500 || fields.región.length > 120 || (fields.pregunta?.length ?? 0) > 600\n    || /TODO_|por confirmar|por definir/i.test(fields.región)\n    || (fields.entidad ? !/^(0[1-9]|[12]\\d|3[0-2])$/.test(fields.entidad) : !/^(federal|nacional)$/i.test(fields.región))\n    || (fields.municipio && (!fields.entidad || !/^\\d{3}$/.test(fields.municipio) || fields.municipio === '000'))\n  )) return null;\n  return {\n    workflow, ...(attached ? {} : { document }),\n    question: fields.pregunta,\n    ...(fields.aclaración ? { clarification: fields.aclaración } : {}),\n    context: {\n      our_party: fields.empresa, counterparty: fields.contraparte, our_role: fields.rol,\n      objectives: [fields.objetivo], confirmed: true,\n    },\n    jurisdiction: {\n      region: fields.región, entity_code: fields.entidad || null, municipality_code: fields.municipio || null,\n    },\n  };\n}\n\nfunction attachmentMetadata(file) {\n  if (typeof file?.file_name !== 'string' || !/\\.txt$/i.test(file.file_name)\n    || (file.mime_type !== undefined && (typeof file.mime_type !== 'string'\n      || !/^text\\/plain(?:;\\s*charset=utf-8)?$/i.test(file.mime_type)))\n    || typeof file.file_id !== 'string' || !/^[A-Za-z0-9_-]{1,512}$/.test(file.file_id)\n    || !Number.isSafeInteger(file.file_size) || file.file_size < 1 || file.file_size > MAX_ATTACHMENT_BYTES) return null;\n  return { file_id: file.file_id, file_size: file.file_size };\n}\n\nfunction telegramIngress(update, config, sha256) {\n  const owner = id(config.owner_user_id);\n  const ownerChat = id(config.owner_chat_id);\n  if (!owner || !ownerChat) return null;\n  const callback = update.callback_query;\n  const message = callback?.message || update.message;\n  const actor = id((callback?.from || message?.from)?.id);\n  const chat = id(message?.chat?.id);\n  if (message?.chat?.type !== 'private' || actor !== owner || chat !== ownerChat) return null;\n\n  const reply = text => ({ action: 'reply', chat_id: chat, text });\n  if (callback) {\n    if (typeof callback.id !== 'string' || !/^ca:[ar]:[a-f0-9]{32}$/.test(callback.data || '')) return null;\n    return { action: 'redeem', chat_id: chat, body: {\n      operation: 'redeem_approval',\n      callback_query: { id: callback.id, data: callback.data, from: { id: actor }, message: { chat: { id: chat } } },\n    } };\n  }\n  const attached = message.document !== undefined;\n  const content = attached ? message.caption : message.text;\n  if (attached && (message.media_group_id || message.forward_origin || message.forward_date)) return reply(attachmentInstructions);\n  if (typeof content !== 'string' || (attached && content.length > MAX_CAPTION_CHARS)) {\n    return reply(attached ? attachmentInstructions : instructions);\n  }\n  const text = content.replace(/\\r\\n?/g, '\\n').trim();\n  const match = /^\\/([a-z]+)(?:@ContracterExampleBot)?(?:[ \\t\\n]+([\\s\\S]*))?$/i.exec(text);\n  if (!match) return reply(attached ? attachmentInstructions : 'Usa /help para ver los comandos de Contracter.');\n  const command = match[1].toLowerCase();\n  const rest = (match[2] || '').trim();\n  const isAuditCommand = ['auditar', 'consulta', 'evaluar'].includes(command);\n  const evaluation = command === 'evaluar';\n  if (attached && command !== 'demo' && !isAuditCommand) return reply(attachmentInstructions);\n  if (command === 'start' || command === 'help') {\n    return reply('Contracter\\n/demo — abrir el expediente ficticio de Gemini Free\\n/pregunta UUID tema — consultar el mismo expediente de muestra\\n/auditar — auditoría completa\\n/consulta — consulta puntual\\n/evaluar — opciones para evaluar con datos ficticios\\n/estado — disponibilidad\\n/expediente UUID — estado de un caso\\n/revisar UUID — solicitar revisión humana autorizada');\n  }\n  if (command === 'estado') {\n    return reply('Envía /evaluar para ver las opciones con datos ficticios. Las solicitudes de auditoría y consulta con OpenAI requieren confirmar el uso de créditos.');\n  }\n  if (command === 'expediente' || command === 'revisar') {\n    if (!uuid.test(rest)) return reply('Incluye el UUID de tu expediente después del comando.');\n    if (rest.toLowerCase() === geminiDemoCaseId(chat, sha256)) {\n      return reply(command === 'expediente' ? demoReply(rest.toLowerCase()) : 'El expediente ficticio de la demo no se puede aprobar.');\n    }\n    return command === 'expediente'\n      ? { action: 'lookup', chat_id: chat, body: { operation: 'get_case', audience: 'telegram', case_id: rest, owner_chat_id: chat } }\n      : { action: 'issue', chat_id: chat, body: { operation: 'issue_approval', case_id: rest, chat_id: chat, approver_id: actor } };\n  }\n  if (command === 'demo' || command === 'pregunta') {\n    if (message.forward_origin || message.forward_date) return reply('Escribe el comando directamente en este chat para iniciar la solicitud.');\n    const caseId = geminiDemoCaseId(chat, sha256);\n    if (command === 'demo') {\n      if (attached) {\n        const attachment = attachmentMetadata(message.document);\n        if (rest || !attachment) return reply(demoAttachmentInstruction);\n        return { action: 'download_attachment', chat_id: chat, demo_case_id: caseId, attachment };\n      }\n      if (rest && rest.replace(/^\\uFEFF/, '').trim() !== evaluationFixture().document) return reply(demoAttachmentInstruction);\n      return reply(demoReply(caseId));\n    }\n    const selection = /^(\\S+)[ \\t]+(entrega|pago|recepci[oó]n)$/i.exec(rest);\n    if (!selection || selection[1].toLowerCase() !== caseId) {\n      return reply('Usa /demo para obtener la referencia de tu expediente de muestra y los comandos de entrega, pago o recepción.');\n    }\n    const ids = requestIds(update.update_id, chat, sha256);\n    if (!ids) return null;\n    const topic = selection[2].toLowerCase().replace('ó', 'o');\n    return { action: 'audit_gemini', chat_id: chat, input: {\n      workflow: 'qa', demo_case_id: caseId, demo_topic: topic, synthetic: true,\n      owner_chat_id: ids.owner_chat_id, run_id: ids.run_id,\n    } };\n  }\n  if (!isAuditCommand) return reply('Usa /help para ver los comandos de Contracter.');\n  if (message.forward_origin || message.forward_date) return reply('Escribe el comando directamente en este chat para iniciar la solicitud.');\n  if (evaluation) {\n    if (!rest) return reply(evaluationOptions);\n    const provider = /^(gemini|openai|gateway)(?=$|\\s)/i.exec(rest)?.[1].toLowerCase();\n    if (provider) {\n      const selection = rest.toLowerCase();\n      const isConsultation = selection === 'gemini consulta';\n      if (attached || !(selection === provider || isConsultation || selection === 'openai confirmar')) {\n        return reply('La prueba con proveedor usa un contrato ficticio incluido. Envía el comando solo, sin contrato ni adjuntos.\\n' + evaluationOptions);\n      }\n      if (provider === 'gateway') return reply('La alternativa Gateway está pendiente de configuración y verificación. Puedes consultar las opciones con /evaluar.');\n      if (selection === 'openai') return reply(directOpenAIWarning + ' Para ejecutar la prueba fija, envía /evaluar openai confirmar.');\n      const ids = requestIds(update.update_id, chat, sha256);\n      if (!ids) return null;\n      return { action: provider === 'gemini' ? 'audit_gemini' : 'audit_openai', chat_id: chat,\n        input: { workflow: isConsultation ? 'qa' : 'full', ...evaluationFixture(), synthetic: true, ...ids } };\n    }\n  }\n  const confirmation = /^confirmar(?:\\n|$)/i.exec(rest);\n  const guide = attached ? attachmentInstructions : instructions;\n  if (!confirmation) {\n    return reply(directOpenAIWarning + ' Inicia el mensaje con /' + command + ' confirmar y vuelve a incluir el formulario.'\n      + '\\n\\n' + (evaluation ? guide.replace('/auditar confirmar', '/evaluar confirmar') : guide));\n  }\n  const input = readForm(rest.slice(confirmation[0].length), command === 'consulta' ? 'qa' : 'full', attached);\n  if (!input) {\n    return reply(evaluation ? guide.replace('/auditar confirmar', '/evaluar confirmar') : guide);\n  }\n  const attachment = attached ? attachmentMetadata(message.document) : null;\n  if (attached && !attachment) {\n    return reply('El adjunto debe ser un .txt UTF-8 con tamaño informado por Telegram de hasta 36 000 bytes.');\n  }\n  const ids = requestIds(update.update_id, chat, sha256);\n  if (!ids) return null;\n  return { action: attached ? 'download_attachment' : 'audit', chat_id: chat, input: {\n    ...input, ...(evaluation ? { synthetic: true } : {}),\n    ...ids,\n  }, ...(attachment ? { attachment } : {}) };\n}\n\nfunction telegramAttachment(command, bytes) {\n  if (command?.action !== 'download_attachment') return null;\n  const demo = typeof command.demo_case_id === 'string' && uuid.test(command.demo_case_id);\n  const reject = () => ({ action: 'reply', chat_id: command.chat_id,\n    text: demo ? demoAttachmentInstruction\n      : 'El archivo debe ser texto UTF-8 legible de hasta 12 000 caracteres y 1500 líneas. Guarda el .txt y vuelve a adjuntarlo con el pie del mensaje.' });\n  if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MAX_ATTACHMENT_BYTES\n    || bytes.length !== command.attachment?.file_size) return reject();\n\n  const text = bytes.toString('utf8');\n  // Round-trip rejects invalid UTF-8 that Buffer.toString would otherwise replace.\n  if (!Buffer.from(text, 'utf8').equals(bytes) || /[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/.test(text)) return reject();\n  const document = text.replace(/^\\uFEFF/, '').replace(/\\r\\n?/g, '\\n').trim();\n  if (!document || document.startsWith('%PDF-') || document.length > MAX_DOCUMENT_CHARS\n    || document.split('\\n').length > 1500) return reject();\n  if (demo) return document === evaluationFixture().document\n    ? { action: 'reply', chat_id: command.chat_id, text: demoReply(command.demo_case_id) } : reject();\n  return { action: 'audit', chat_id: command.chat_id, input: { ...command.input, document } };\n}\n\nfunction auditReply(result, allowedQuestions = [], inputAction = null, demoCaseId = null) {\n  switch (result?.status) {\n    case 'AWAITING_HUMAN':\n      if (result.synthetic === true) {\n        return 'Evaluación con datos ficticios. Expediente ' + result.case_id + '\\nLa V2 está guardada sin opción de aprobación. Consulta el resumen con /expediente ' + result.case_id + '.';\n      }\n      return 'Expediente ' + result.case_id + '\\nV2 retenida para revisión humana. Usa /revisar ' + result.case_id + ' si tienes autorización.';\n    case 'QA_READY': {\n      const evaluation = result.synthetic === true || inputAction === 'audit_gemini' || inputAction === 'audit_openai';\n      const label = demoCaseId && uuid.test(demoCaseId) ? 'Expediente de muestra ' + demoCaseId + '\\n'\n        : evaluation ? 'Evaluación con datos ficticios.\\n' : '';\n      return (label + String(result.answer || 'Consulta registrada.')).slice(0, 3500);\n    }\n    case 'NO_REWRITE_REQUIRED':\n      return 'Los auditores coincidieron en conservar el texto. La explicación quedó registrada para revisión humana.';\n    case 'CONTEXT_REQUIRED': {\n      const questions = Array.isArray(result.questions)\n        ? [...new Set(result.questions)].filter(question => allowedQuestions.includes(question)).slice(0, 5)\n        : [];\n      if (inputAction === 'audit_gemini' || inputAction === 'audit_openai') {\n        return ['La prueba fija quedó retenida porque el flujo pidió aclaraciones.', ...questions,\n          'El equipo de Contracter debe revisar el contrato de muestra antes de repetir la prueba.'].join('\\n');\n      }\n      if (!questions.length) return result.synthetic === true ? instructions.replace('/auditar confirmar', '/evaluar confirmar') : instructions;\n      return [\n        'El expediente necesita estas aclaraciones.',\n        ...questions.map((question, index) => (index + 1) + '. ' + question),\n        result.synthetic === true\n          ? 'Reenvía el contrato y el formulario con /evaluar confirmar. Corrige los campos que correspondan.'\n          : 'Reenvía el contrato y el formulario en un mensaje nuevo. Corrige los campos que correspondan.',\n        clarificationInstruction,\n      ].join('\\n');\n    }\n    case 'DUPLICATE':\n      return 'Esta solicitud ya fue registrada.';\n    case 'STORE_UNAVAILABLE':\n      return 'El servicio de expedientes no pudo confirmar el guardado. Revisa el estado de la ejecución antes de reenviar.';\n    case 'HELD':\n      if (result.reason === 'PROVIDER_CREDIT_EXHAUSTED') return 'Auditoría retenida: OpenAI informó saldo de créditos agotado.';\n      if (result.reason === 'PROVIDER_CAPACITY_UNAVAILABLE') return 'Prueba retenida por saturación de Gemini. Puedes volver a intentarlo más tarde con /evaluar.';\n      if (result.reason === 'PROVIDER_QUOTA_EXHAUSTED' && inputAction === 'audit_gemini') {\n        return 'Prueba retenida: Gemini informó que alcanzó su cuota. Puedes reintentar cuando se renueve la cuota o consultar /evaluar para ver otras opciones.';\n      }\n      if (result.reason === 'LEGAL_SEARCH_UNAVAILABLE') return 'No se pudo consultar el buscador jurídico. La solicitud quedó retenida.';\n      if (/LEGAL|SOURCE|GROUNDING/.test(result.reason || '')) {\n        return 'Auditoría retenida: hacen falta fuentes jurídicas revisadas para el ámbito y la fecha del contrato.';\n      }\n      return 'Auditoría retenida. Código: ' + String(result.reason || 'CONTROL_PENDIENTE').slice(0, 90);\n    default:\n      return 'El servicio de auditoría aún no está disponible.';\n  }\n}\n\nreturn { auditReply };\n})();\nconst result = $input.first().json;\nconst {chat_id,action,input} = $(\"Validar entrada Telegram\").itemMatching(0).json;\nreturn [{json:{chat_id,text:auditReply(result, [\"¿A quién representas, cuál es tu papel, quién es la contraparte y qué buscas proteger?\",\"¿Qué jurisdicción mexicana y qué fecha de referencia corresponden al contrato?\",\"¿Puedes resumir la aclaración en una línea de hasta 500 caracteres?\",\"¿Qué condición es indispensable y qué condiciones se pueden negociar?\",\"¿Qué monto, moneda o forma de pago debe quedar pactada?\",\"¿Qué fecha o plazo debe aplicarse?\",\"¿Qué bien, servicio o entregable debe incluirse?\",\"¿Cómo se confirmará que el bien o servicio fue recibido y aceptado?\",\"¿Qué debe ocurrir si alguna parte incumple o decide terminar el contrato?\",\"¿Qué responsabilidad, garantía o límite quieres negociar?\",\"¿Qué información debe mantenerse confidencial y durante cuánto tiempo?\",\"¿Cómo se resolverán las controversias?\"], action, input?.demo_case_id)}}];"
+      }
+    },
+    {
+      "id": "ee57cf40-8fc9-44da-9400-99c02acdec30",
+      "name": "¿Ver expediente?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "15a0afbd-62b3-46bf-ba9b-c5af9a05a477",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "lookup",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "6c43e5e5-bc42-459c-b468-e28be5b96a65",
+      "name": "Leer expediente de este chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        50
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://abcdefghijklmnopqrst.supabase.co/functions/v1/contracter-store",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 35000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Contracter · Lectura Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "8daa07df-c6cd-4beb-add9-41acd1c18710",
+      "name": "Redactar estado privado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        50
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\nconst command = $(\"Validar entrada Telegram\").itemMatching(0).json;\nconst detail = result.statusCode === 200 && result.body?.case ? result.body : null;\nconst text = detail ? [\"Expediente \" + detail.case.case_id, \"Estado \" + detail.status,\n  detail.synthetic ? \"Prueba sintética\" : \"Expediente privado\",\n  detail.case.reports?.watson?.summary || \"Consulta el expediente en el panel privado.\"].join(\"\\n\")\n  : \"No se pudo consultar ese expediente con este chat.\";\nreturn [{json:{chat_id:command.chat_id,text:text.slice(0,3500)}}];"
+      }
+    },
+    {
+      "id": "fa36562b-1696-4ce5-902e-8789397780e9",
+      "name": "¿Acción de revisión?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        280
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d0aee780-4143-42af-9829-3bdce67ad1d3",
+              "leftValue": "={{ [\"issue\",\"redeem\"].includes($json.action) ? \"review\" : \"reply\" }}",
+              "rightValue": "review",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "8d729158-30e0-4db8-a14f-9de06159366e",
+      "name": "Revisión pendiente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        280
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:{chat_id:$input.first().json.chat_id,text:\"La revisión humana está pendiente de configuración. El contrato permanece retenido.\"}}];"
+      }
+    },
+    {
+      "id": "25cff56a-67ba-4b6e-b9e8-1dc2b78f6df6",
+      "name": "Responder al propietario",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2430,
+        30
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "replyMarkup": "={{ $json.approve && $json.reject ? \"inlineKeyboard\" : \"none\" }}",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Aprobar V2",
+                    "additionalFields": {
+                      "callback_data": "={{ $json.approve }}"
+                    }
+                  },
+                  {
+                    "text": "Rechazar V2",
+                    "additionalFields": {
+                      "callback_data": "={{ $json.reject }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "name": "Contracter · Telegram"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Entrada del bot privado": {
+      "main": [
+        [
+          {
+            "node": "Validar entrada Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar entrada Telegram": {
+      "main": [
+        [
+          {
+            "node": "¿Descargar adjunto?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Descargar adjunto?": {
+      "main": [
+        [
+          {
+            "node": "Descargar .txt privado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Gemini Free?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descargar .txt privado": {
+      "main": [
+        [
+          {
+            "node": "Validar y extraer texto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar y extraer texto": {
+      "main": [
+        [
+          {
+            "node": "¿Gemini Free?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Gemini Free?": {
+      "main": [
+        [
+          {
+            "node": "Entrada ficticia Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Auditoría o consulta?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Entrada ficticia Gemini": {
+      "main": [
+        [
+          {
+            "node": "Ejecutar agentes Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar agentes Gemini": {
+      "main": [
+        [
+          {
+            "node": "Redactar respuesta de auditoría",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Auditoría o consulta?": {
+      "main": [
+        [
+          {
+            "node": "Disponibilidad de OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Ver expediente?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Disponibilidad de OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Responder al propietario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redactar respuesta de auditoría": {
+      "main": [
+        [
+          {
+            "node": "Responder al propietario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Ver expediente?": {
+      "main": [
+        [
+          {
+            "node": "Leer expediente de este chat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Acción de revisión?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer expediente de este chat": {
+      "main": [
+        [
+          {
+            "node": "Redactar estado privado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redactar estado privado": {
+      "main": [
+        [
+          {
+            "node": "Responder al propietario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Acción de revisión?": {
+      "main": [
+        [
+          {
+            "node": "Revisión pendiente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder al propietario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Revisión pendiente": {
+      "main": [
+        [
+          {
+            "node": "Responder al propietario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "timezone": "America/Mexico_City"
+  },
+  "active": false,
+  "pinData": {}
+}

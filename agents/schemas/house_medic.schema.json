@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HouseMedicAuditSchemaV2",
+  "type": "object",
+  "required": [
+    "phase",
+    "target_agent",
+    "status",
+    "anomaly_score",
+    "clinical_notes"
+  ],
+  "properties": {
+    "phase": {
+      "type": "string",
+      "enum": [
+        "INITIAL_MONITORING",
+        "POST_INTERROGATION_VERDICT"
+      ]
+    },
+    "target_agent": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "CLEAN",
+        "SUSPICIOUS_NEEDS_INTERROGATION",
+        "CONFIRMED_INFECTED"
+      ]
+    },
+    "anomaly_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "clinical_notes": {
+      "type": "string",
+      "description": "Diagnóstico escéptico de House sobre el comportamiento del agente."
+    },
+    "interrogation_question": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Obligatorio si status es SUSPICIOUS_NEEDS_INTERROGATION. Pregunta directa al agente aislado (sin acceso al contrato) para que justifique su lógica."
+    },
+    "quarantine_action": {
+      "type": "string",
+      "enum": [
+        "NONE",
+        "OPEN_ISOLATION_CHAMBER",
+        "PURGE_MEMORY_AND_RETRY"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,97 @@
+{
+  "name": "CONTRACTER 03 · Telegram · preparación controlada",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {
+          "chatIds": "TODO_INSERT_KEY_HERE",
+          "userIds": "TODO_INSERT_KEY_HERE"
+        }
+      },
+      "id": "879a1982-bc03-4458-b788-28a4e9473983",
+      "name": "Telegram Contracter - Entrada",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Contracter · Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Plantilla portable: IDs privados sólo en la instancia n8n. Sin IDs válidos no responde.\nconst CONFIG={owner_chat_id:\"TODO_INSERT_KEY_HERE\",owner_user_id:\"TODO_INSERT_KEY_HERE\"};\nconst m=$input.first().json.message;\nif(!m||m.chat?.type!=='private'||!Number.isSafeInteger(m.chat.id)||!Number.isSafeInteger(m.from?.id)) return [];\nconst text=typeof m.text==='string'?m.text.trim():'';\nif(String(m.chat.id)!==CONFIG.owner_chat_id||String(m.from.id)!==CONFIG.owner_user_id) return [];\nconst command=text.split(/\\s+/)[0].split('@')[0].toLowerCase();\nlet reply;\nif(command==='/start'||command==='/help') reply='Contracter · canal de mando\\n/estado — estado del enlace\\n/consulta — comprobación de preparación jurídica\\n/auditar — comprobación de preparación de auditoría\\nEste canal todavía no ejecuta dictámenes jurídicos ni aprueba contratos.';\nelse if(command==='/estado') reply='El enlace Telegram → n8n → Telegram funciona. Los flujos completos de auditoría siguen en modo MOCK. El corpus normativo y la ejecución LLM necesitan configuración y verificación antes de analizar contratos reales. Glenn se conserva en borrador por decisión del usuario.';\nelse if(command==='/consulta') reply='Consulta retenida: no hay corpus jurídico revisado enlazado a este flujo. No se afirmará vigencia ni se inventarán normas. La búsqueda y la respuesta legal permanecen deshabilitadas hasta verificar sus fuentes.';\nelse if(command==='/auditar') reply='Auditoría real retenida: los flujos 01 y 02 se probaron con un caso ficticio. Falta enlazar el proveedor LLM, la persistencia de cada intervención y el corpus jurídico revisado. No envíes contratos privados todavía.';\nelse reply='Usa /help para consultar los comandos. Los archivos y las aprobaciones contractuales no se aceptan en esta etapa.';\nreturn [{json:{chat_id:String(m.chat.id),sender_id:String(m.from.id),reply}}];\n"
+      },
+      "id": "792556b6-0940-4925-93d8-d4976303180b",
+      "name": "Fury - Comandos y autorización",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.reply }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "fd16d35c-211d-4630-8cf4-9023fc69f02b",
+      "name": "Telegram Contracter - Responder",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        600,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Contracter · Telegram"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Contracter - Entrada": {
+      "main": [
+        [
+          {
+            "node": "Fury - Comandos y autorización",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fury - Comandos y autorización": {
+      "main": [
+        [
+          {
+            "node": "Telegram Contracter - Responder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Mexico_City"
+  },
+  "active": false,
+  "pinData": {}
+}

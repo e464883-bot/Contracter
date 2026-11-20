@@ -1,0 +1,14 @@
+Contrato:
+CONTRATO DE COMPRAVENTA DE ORGANIZADORES DE ESCRITORIO
+
+1. Partes y objeto. Oficina Cerundia, compradora, adquiere de Manufacturas Lumeral, proveedora, 60 organizadores de escritorio nuevos, de plástico reciclado, de color gris y de 25 x 15 x 10 cm. Ambas empresas son ficticias. La operación busca recibir los productos especificados con precio y fecha acordados.
+
+2. Precio. Cada organizador cuesta $150 MXN. El subtotal de 60 unidades es de $9,000 MXN. Se agrega IVA de 16% por $1,440 MXN y el total es de $10,440 MXN. El embalaje y el transporte están incluidos. El precio sólo podrá cambiar mediante acuerdo escrito de ambas partes.
+
+3. Entrega. Los 60 organizadores se entregarán el 22 de enero de 2027, entre las 10:00 y las 14:00, en la ubicación ficticia de Oficina Cerundia, Calle del Organizador 60, Local 3, Ciudad de México. Una entrega parcial o un cambio de fecha requieren aceptación escrita de la compradora.
+
+4. Recepción y corrección. Las partes registrarán la cantidad y el estado visible de los productos al recibirlos. La compradora podrá comunicar diferencias de cantidad o de especificación por escrito durante los cinco días hábiles posteriores a la entrega. La proveedora corregirá las diferencias acreditadas en los cinco días hábiles siguientes al aviso, sin costo adicional. Para este contrato, los días hábiles son de lunes a viernes, excluyendo los días de descanso obligatorio.
+
+5. Pago y cierre. La compradora pagará el total mediante transferencia dentro de diez días naturales contados desde el día siguiente a la recepción conforme de las 60 unidades y de la factura correcta, tomando la última de esas dos fechas. El contrato termina cuando se completen la entrega, las correcciones pendientes y el pago. No hay renovación automática.
+
+CONTRACTER_QA_CONTROL_AFTON

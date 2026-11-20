@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+backend/data/
+*.sqlite
+*.sqlite-*
+__pycache__/
+*.pyc
+node_modules/
+private/
+*.log

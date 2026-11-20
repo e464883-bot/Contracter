@@ -1,0 +1,105 @@
+{
+  "name": "CONTRACTER 04 · Prueba OpenAI",
+  "nodes": [
+    {
+      "id": "dc94acbc-c5b0-4cae-bf34-d50085dc6357",
+      "name": "Inicio manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "d2d0d8e3-997e-4f93-9f51-756ffcd2c77e",
+      "name": "OpenAI · prueba sintética",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        250,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/responses",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"model\":\"gpt-6-luna\",\"store\":false,\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"none\"},\"input\":\"Synthetic connectivity check. Return status ok.\",\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"contracter_connectivity\",\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\",\"enum\":[\"ok\"]}},\"required\":[\"status\"],\"additionalProperties\":false}}}}",
+        "options": {
+          "timeout": 35000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "name": "OpenAI account"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "3198fb52-a6da-4927-9668-ee6d19acacd8",
+      "name": "Resultado de conexión",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const response = $input.first().json;\nconst body = response.body;\nconst parts = (body?.output || []).flatMap(item => item.content || []);\nlet value = null;\ntry { value = JSON.parse(parts.find(part => part.type === 'output_text')?.text || 'null'); } catch {}\nreturn [{ json: {\n  connected: response.statusCode === 200 && body?.status === 'completed' && value?.status === 'ok',\n  http_status: response.statusCode || null,\n  provider_error: body?.error?.code || body?.error?.type || (response.error ? 'network_or_credential' : null),\n  model: body?.model || null,\n  input_tokens: body?.usage?.input_tokens ?? null,\n  output_tokens: body?.usage?.output_tokens ?? null,\n} }];"
+      }
+    }
+  ],
+  "connections": {
+    "Inicio manual": {
+      "main": [
+        [
+          {
+            "node": "OpenAI · prueba sintética",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI · prueba sintética": {
+      "main": [
+        [
+          {
+            "node": "Resultado de conexión",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "timezone": "America/Mexico_City"
+  },
+  "active": false,
+  "pinData": {}
+}

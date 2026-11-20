@@ -1,0 +1,46 @@
+{
+  "packages": [
+    {
+      "name": "@elevenlabs/client",
+      "version": "1.35.0",
+      "npm_integrity": "sha512-lGz2XLj+0IsDp6FzL++LXxTTGx9gaQPcWMWIjKXqXhCCZnpUA47HF6Rl3dF/5g+KhMNcQUzAUlYxGFEYq2qI9g=="
+    },
+    {
+      "name": "@alexanderolsen/libsamplerate-js",
+      "version": "2.1.2",
+      "npm_integrity": "sha512-pIXQDX/DZIgz6pKInUddDd6Tnq/s2E9g4ZITkKX60kxM/nAuZcxYa/z0y/jwJbjyp/oKe+8/qHLSqMzQ18xSiQ=="
+    }
+  ],
+  "files": [
+    {
+      "file": "elevenlabs-client-1.35.0/lib.iife.js",
+      "sha256": "17e0bd09dcc812e6fd21acac25589589061467c7c5115e1295c9ff6a6ca8b43d",
+      "bytes": 1102589
+    },
+    {
+      "file": "elevenlabs-client-1.35.0/worklets/audioConcatProcessor.js",
+      "sha256": "08b6ef29d021e1147e2abf11b25f797710c66780b740b83db2d8876986c3ef70",
+      "bytes": 3660
+    },
+    {
+      "file": "elevenlabs-client-1.35.0/worklets/rawAudioProcessor.js",
+      "sha256": "3bea39a5ee6359b252e76b6a87115aa178d63359dcb4b769d7e3e50a19c01f59",
+      "bytes": 3970
+    },
+    {
+      "file": "elevenlabs-client-1.35.0/LICENSE.txt",
+      "sha256": "0bfed2a2aa8d106bdb144f55416e193450fbc1e1b3257e3852bc64418069de5a",
+      "bytes": 1067
+    },
+    {
+      "file": "libsamplerate-2.1.2/libsamplerate.worklet.js",
+      "sha256": "ca6e162f194d3ee5a2d2cd3c3b49641d31e56845aeae507feca1cdf8aa8116cb",
+      "bytes": 2016428
+    },
+    {
+      "file": "libsamplerate-2.1.2/LICENSE.md",
+      "sha256": "69f1609423518937e0c70baade7a15e4eaaaee7109a8b0e793733b0f89ec6f72",
+      "bytes": 2497
+    }
+  ]
+}

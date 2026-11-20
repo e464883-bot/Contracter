@@ -1,0 +1,87 @@
+name: Contracter - Validar y preparar Pages
+
+# Este archivo debe quedar en .github/workflows del repositorio cuya raíz sea
+# contracter/. No hay despliegue por push ni PR: el chasis es local por defecto.
+# Antes de publicar: configurar Pages como GitHub Actions, proteger la rama
+# principal y exigir revisores en el environment legal-approval. Ese environment
+# contiene CONTRACTER_APPROVAL_HMAC_KEY del backend autenticador (no del browser).
+# Reemplazar TODOS los casos de docs/data por copias live aprobadas y anonimizadas;
+# no subir contratos originales ni secretos. El ejemplo mock nunca pasa production.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publicar sólo expedientes live firmados y anonimizados
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contracter-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate_mock:
+    if: ${{ inputs.publish != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Casos, guardrails adversariales y tubería mock offline
+        run: python scripts/validate_case_json.py --preview --self-test --check-workflows --exercise-workflows
+      - name: Sintaxis del dashboard
+        run: node --check docs/app.js
+
+  approved_package:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pages: read
+    environment: legal-approval
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Exigir firma del abogado, consenso y copia pública segura
+        env:
+          CONTRACTER_APPROVAL_HMAC_KEY: ${{ secrets.CONTRACTER_APPROVAL_HMAC_KEY }}
+        run: python scripts/validate_case_json.py --production --check-workflows --exercise-workflows
+      - name: Sintaxis del dashboard
+        run: node --check docs/app.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: approved_package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Desplegar artefacto ya validado
+        id: deployment
+        uses: actions/deploy-pages@v4

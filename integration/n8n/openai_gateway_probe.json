@@ -1,0 +1,126 @@
+{
+  "name": "CONTRACTER · Prueba sintética de Gateway",
+  "nodes": [
+    {
+      "id": "a011a54c-b7c9-4b97-9eed-5900c7745c81",
+      "name": "Inicio manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "49a630c8-cb5a-4a6b-9354-310c7ba8b1f6",
+      "name": "OpenAI · Responses",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        250,
+        0
+      ],
+      "parameters": {
+        "resource": "text",
+        "operation": "response",
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-6-luna"
+        },
+        "responses": {
+          "values": [
+            {
+              "type": "text",
+              "role": "user",
+              "content": "Prueba ficticia de conectividad. Devuelve status ok."
+            }
+          ]
+        },
+        "simplify": false,
+        "options": {
+          "store": false,
+          "maxTokens": 256,
+          "reasoning": {
+            "reasoningOptions": {
+              "effort": "low",
+              "summary": "none"
+            }
+          },
+          "textFormat": {
+            "textOptions": {
+              "type": "json_schema",
+              "name": "contracter_gateway_probe",
+              "schema": "{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\",\"enum\":[\"ok\"]}},\"required\":[\"status\"],\"additionalProperties\":false}",
+              "strict": true
+            }
+          }
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "006114be-2f7c-4d82-84e6-2ac1637976ba",
+      "name": "Comprobar compatibilidad",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const inspectResponse = function inspectResponse(body, expectedModel, expectedSchema) {\n  const parts = (Array.isArray(body?.output) ? body.output : [])\n    .flatMap(item => item?.type === 'message' && Array.isArray(item.content) ? item.content : []);\n  const refused = parts.some(part => part?.type === 'refusal');\n  const outputs = parts.filter(part => part?.type === 'output_text');\n  const text = outputs.length === 1 ? outputs[0].text : null;\n  let parsed = text;\n  if (typeof text === 'string') {\n    try { parsed = JSON.parse(text); } catch { parsed = null; }\n  }\n  const exactJson = Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed)\n    && Object.keys(parsed).length === 1 && parsed.status === 'ok');\n  const format = body?.text?.format;\n  const providerStrict = format?.type === 'json_schema' && format.name === expectedSchema\n    && format.strict === true;\n  const tokenCount = value => Number.isSafeInteger(value) && value >= 0 ? value : null;\n  const usage = {\n    input_tokens: tokenCount(body?.usage?.input_tokens),\n    output_tokens: tokenCount(body?.usage?.output_tokens),\n    cached_input_tokens: tokenCount(body?.usage?.input_tokens_details?.cached_tokens),\n    cache_write_tokens: tokenCount(body?.usage?.input_tokens_details?.cache_write_tokens),\n  };\n  const usageAvailable = usage.input_tokens > 0 && usage.output_tokens > 0\n    && usage.cached_input_tokens !== null && usage.cached_input_tokens <= usage.input_tokens;\n  const completed = body?.object === 'response' && body.status === 'completed';\n  const modelMatches = body?.model === expectedModel;\n  const providerStoreOff = body?.store === false;\n  return {\n    compatible: completed && modelMatches && !refused && exactJson && providerStrict && usageAvailable && providerStoreOff,\n    synthetic_input: true,\n    completed_responses_envelope: completed,\n    model_matches: modelMatches,\n    provider_refusal: refused,\n    output_matches_schema: exactJson,\n    output_encoding: typeof text === 'string' ? 'string' : text && typeof text === 'object' ? 'parsed' : null,\n    provider_strict_confirmed: providerStrict,\n    provider_store_off_confirmed: providerStoreOff,\n    usage_available: usageAvailable,\n    usage,\n  };\n};\nreturn [{json: inspectResponse($input.first().json, \"gpt-6-luna\", \"contracter_gateway_probe\")}];"
+      }
+    },
+    {
+      "id": "bc840526-f08c-43dd-9714-378397fe3d69",
+      "name": "Alcance y configuración",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        180
+      ],
+      "parameters": {
+        "width": 735,
+        "height": 260,
+        "content": "## Prueba puntual de Gateway\n\nEn **OpenAI · Responses**, selecciona **Use Gateway credits**. Verifica que el modelo `gpt-6-luna` figure como disponible y consulta su tarifa en n8n antes de ejecutar manualmente. Una ejecución consume parte del saldo Gateway.\n\nEl último nodo verifica la respuesta, el modelo, la señal de JSON estricto, Store desactivado y los contadores de tokens. Algunas versiones del nodo muestran Strict aunque el código público revisado no lo envía. La validación local por sí sola no confirma que OpenAI haya recibido Strict.\n\nLa prueba usa un mensaje ficticio fijo. El saldo descontado se verifica por separado en el panel de n8n. Este flujo sólo comprueba la conexión y el formato de una llamada.\n\n[Documentación de Gateway](https://docs.n8n.io/build/understand-workflows/use-gateway-credits) · [Tarifas de n8n](https://app.n8n.cloud/service-pricing)"
+      }
+    }
+  ],
+  "connections": {
+    "Inicio manual": {
+      "main": [
+        [
+          {
+            "node": "OpenAI · Responses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI · Responses": {
+      "main": [
+        [
+          {
+            "node": "Comprobar compatibilidad",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  },
+  "active": false,
+  "pinData": {}
+}

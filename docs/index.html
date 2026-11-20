@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Contracter: panel operativo para revisar contratos, fuentes jurídicas, costos y controles de aprobación. Datos de demostración o lectura desde un backend propio.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; connect-src 'self' wss://api.elevenlabs.io; media-src 'self' blob:; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <title>Contracter · Operación</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Saltar al contenido</a>
+  <aside class="sidebar" aria-label="Navegación principal">
+    <a class="brand" href="#overview" aria-label="Contracter, inicio"><span class="brand-mark" aria-hidden="true">C<span>•</span></span><span>contracter<small>INTELIGENCIA CONTRACTUAL</small></span></a>
+    <div class="workspace-label">ESPACIO DE TRABAJO</div>
+    <nav>
+      <a class="nav-link" href="#overview"><span aria-hidden="true">◫</span> Vista general <span class="nav-index">01</span></a>
+      <a class="nav-link" href="#versions"><span aria-hidden="true">⇄</span> Versiones y cambios <span class="nav-index">02</span></a>
+      <a class="nav-link" href="#reports"><span aria-hidden="true">≡</span> Reporte ejecutivo <span class="nav-index">03</span></a>
+      <a class="nav-link" href="#legal-sources"><span aria-hidden="true">§</span> Fuentes y actualización <span class="nav-index">04</span></a>
+      <a class="nav-link" href="#team"><span aria-hidden="true">◇</span> Mesa de agentes <span class="nav-index">05</span></a>
+      <a class="nav-link" href="#costs"><span aria-hidden="true">▤</span> Costos y trazabilidad <span class="nav-index">06</span></a>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="offline-pill"><span class="status-dot"></span><span id="connection-label">Backend sin configurar</span></div>
+      <p>Estados y fuentes a la vista.<br>Sin aprobación desde el navegador.</p>
+      <a href="#operation" class="guide-link">Guía de operación <span aria-hidden="true">↗</span></a>
+      <div class="sidebar-version">SCAFFOLD / V1.0 <span>13 AGENTES</span></div>
+    </div>
+  </aside>
+
+  <div class="main-shell">
+    <header class="topbar">
+      <div class="breadcrumb">Contracter <span aria-hidden="true">/</span> <strong>Expediente</strong></div>
+      <div class="topbar-actions"><span class="local-chip" id="connection-chip">DEMO · SIN CONEXIÓN</span><span class="avatar" aria-label="Vista ejecutiva">CT</span></div>
+    </header>
+
+    <main id="main">
+      <section id="overview" class="overview-section">
+        <div class="page-heading">
+          <div><p class="eyebrow">MESA DE AUDITORÍA</p><h1>Decide con el expediente a la vista.</h1><p class="page-description">Revisa cambios, fuentes y aprobación antes de liberar la propuesta V2.</p></div>
+          <div class="file-actions">
+            <button class="button button-secondary" id="reset-demo" type="button">Cargar demo</button>
+            <label class="button button-primary" for="case-file"><span aria-hidden="true">↑</span> Abrir expediente JSON</label>
+            <input id="case-file" class="file-input" type="file" accept=".json,application/json">
+          </div>
+        </div>
+        <div id="load-message" class="load-message" role="status" aria-live="polite">Cargando el expediente de demostración…</div>
+        <div id="simulation-notice" class="simulation-notice"><span class="notice-icon" aria-hidden="true">i</span><div><strong>Entorno de simulación</strong><p>Datos ficticios para probar la tubería. No representan una auditoría jurídica ni una aprobación humana real.</p></div><span class="outline-tag">MOCK</span></div>
+
+        <section class="panel backend-panel" aria-labelledby="backend-title">
+          <details id="backend-details"><summary><span><span class="eyebrow">LECTURA DESDE TU SERVIDOR</span><strong id="backend-title">Conectar un expediente</strong></span><span class="badge badge-neutral" id="backend-status">SIN CONFIGURAR</span></summary>
+            <div class="backend-body"><p>Consulta un expediente guardado y los estados reportados por tu backend. La conexión es de sólo lectura; las claves de n8n, Telegram, la base de datos y ElevenLabs permanecen en el servidor.</p>
+              <form id="backend-form" autocomplete="off">
+                <div class="backend-fields"><label>Base del backend propio<input id="api-base" type="text" placeholder="/api" spellcheck="false" autocomplete="off"></label><label>ID del expediente<input id="api-case-id" type="text" placeholder="UUID del caso" spellcheck="false" autocomplete="off"></label></div>
+                <label class="backend-token">Token de acceso temporal, si tu servidor lo exige<input id="api-token" type="password" placeholder="Sólo en memoria durante esta sesión" autocomplete="off" spellcheck="false"></label>
+                <div class="backend-actions"><button class="button button-primary" id="load-server" type="submit">Consultar backend</button><button class="button button-secondary" id="clear-session" type="button">Borrar acceso temporal</button></div>
+              </form><p id="backend-message" class="backend-message" role="status" aria-live="polite">Sin consultas externas. Configura una URL propia para comenzar.</p><p class="microcopy">Por defecto se permite únicamente el mismo origen de esta página. Un dominio diferente necesita autorización explícita en la configuración pública, CSP y CORS del servidor. El token nunca se guarda en el archivo ni en almacenamiento persistente.</p>
+            </div>
+          </details>
+        </section>
+
+        <section class="panel provider-panel" aria-labelledby="provider-title">
+          <div class="provider-heading">
+            <h2 id="provider-title">Proveedor para la prueba de evaluación</h2>
+            <p>Prepara un comando para el caso ficticio de Contracter. Envía sólo ese comando desde el chat privado del bot de Telegram.</p>
+          </div>
+          <fieldset id="provider-options" class="provider-options" disabled>
+            <legend class="sr-only">Proveedor de IA para la evaluación</legend>
+            <label class="provider-option">
+              <input type="radio" name="evaluation-provider" id="provider-gemini" value="gemini" aria-describedby="provider-gemini-description" checked>
+              <span>
+                <strong>Gemini Free <span class="provider-default">Opción inicial</span></strong>
+                <span id="provider-gemini-description">Nivel gratuito de la API, sujeto a la cuota del proyecto.</span>
+              </span>
+            </label>
+            <label class="provider-option">
+              <input type="radio" name="evaluation-provider" id="provider-openai" value="openai" aria-describedby="provider-openai-description">
+              <span>
+                <strong>OpenAI directo</strong>
+                <span id="provider-openai-description" class="provider-caution">La API se factura por separado de ChatGPT. La prueba del 13 de noviembre de 2026 reportó saldo agotado.</span>
+              </span>
+            </label>
+            <label class="provider-option">
+              <input type="radio" name="evaluation-provider" id="provider-gateway" value="gateway" aria-describedby="provider-gateway-description">
+              <span>
+                <strong>Gateway n8n</strong>
+                <span id="provider-gateway-description">Ruta de respaldo en validación. Depende de que el Gateway tenga crédito disponible.</span>
+              </span>
+            </label>
+          </fieldset>
+          <div id="provider-openai-confirmation" class="provider-confirmation" hidden>
+            <label>
+              <input id="provider-openai-consent" type="checkbox" autocomplete="off">
+              <span>Entiendo que la API de OpenAI puede consumir saldo de una cuenta con facturación separada.</span>
+            </label>
+            <button id="provider-openai-confirm" class="button button-secondary" type="button" disabled>Confirmar OpenAI directo</button>
+          </div>
+          <div id="provider-handoff" class="provider-handoff">
+            <div id="provider-gemini-mode" class="provider-mode">
+              <label for="provider-scope">Tipo de evaluación</label>
+              <select id="provider-scope" disabled>
+                <option value="quick">Consulta breve</option>
+                <option value="full">Auditoría completa</option>
+              </select>
+            </div>
+            <label for="provider-command">Comando para Telegram</label>
+            <div class="provider-command-row">
+              <input id="provider-command" type="text" value="/evaluar gemini consulta" readonly spellcheck="false" autocomplete="off">
+              <button id="provider-copy" class="button button-secondary" type="button" disabled>Copiar comando</button>
+              <a class="button button-primary" href="https://t.me/ContracterExampleBot" target="_blank" rel="noopener noreferrer">Abrir bot de Telegram <span aria-hidden="true">↗</span></a>
+            </div>
+            <p id="provider-note">Consulta breve con el caso ficticio. El comando estará disponible cuando se publique el flujo de evaluación.</p>
+          </div>
+          <p id="provider-status" class="provider-status" role="status"></p>
+        </section>
+
+        <div id="case-content" hidden>
+          <article class="case-header panel">
+            <div class="case-identity"><div class="document-icon" aria-hidden="true">≡</div><div><p class="eyebrow" id="case-reference">EXPEDIENTE</p><h2 id="case-title">Contrato de demostración</h2><p id="case-parties" class="muted"></p></div></div>
+            <div class="case-state"><span id="approval-state" class="badge badge-amber">Aprobación humana pendiente</span><span id="case-date" class="microcopy"></span></div>
+          </article>
+
+          <div class="provenance-strip" aria-label="Alcance y procedencia"><span id="case-source">Fuente: demostración</span><span id="case-cutoff">Corte del expediente: sin fecha</span><span>Alcance: 1 expediente · sin filtros</span></div>
+          <div class="decision-banner" id="decision-banner"><strong id="decision-title">Propuesta retenida</strong><p id="decision-detail">Se requiere revisión y aprobación del abogado responsable.</p></div>
+
+          <div class="metrics-grid" aria-label="Indicadores del expediente">
+            <article class="metric"><span class="metric-label">CONSENSO DE AUDITORES <span aria-hidden="true">◇</span></span><strong id="metric-consensus">—</strong><p id="metric-consensus-note">Revisión de la propuesta V2</p></article>
+            <article class="metric"><span class="metric-label">CAMBIOS DOCUMENTADOS <span aria-hidden="true">⇄</span></span><strong id="metric-changes">—</strong><p>Bitácora técnica de Jarvis</p></article>
+            <article class="metric"><span class="metric-label">DIAGNÓSTICO CONDUCTUAL <span aria-hidden="true">◎</span></span><strong id="metric-house" class="metric-word">—</strong><p id="metric-house-note">Salidas de agentes bajo observación</p></article>
+            <article class="metric"><span class="metric-label">COSTO DEL EXPEDIENTE <span aria-hidden="true">$</span></span><strong id="metric-cost">—</strong><p id="metric-cost-note">USD · sin consumo real</p></article>
+          </div>
+
+          <article class="pipeline panel" aria-labelledby="pipeline-title"><div class="panel-heading"><h3 id="pipeline-title">Estado de la tubería</h3><span class="microcopy">CONTROLES DE LIBERACIÓN</span></div><ol id="pipeline-steps" class="pipeline-steps"></ol><p id="release-note" class="pipeline-note"></p></article>
+
+          <div class="content-grid">
+            <div class="primary-column">
+              <section id="versions" class="panel section-panel">
+                <div class="panel-heading"><div><p class="eyebrow">CONTROL DE VERSIONES</p><h2>La propuesta, frente al original.</h2></div><span class="small-tag">V1 <span aria-hidden="true">→</span> V2</span></div>
+                <div class="tablist" role="tablist" aria-label="Versiones del contrato"><button class="tab is-active" id="compare-tab" role="tab" aria-selected="true" aria-controls="compare-panel" type="button">Comparar versiones</button><button class="tab" id="changes-tab" role="tab" aria-selected="false" aria-controls="changes-panel" tabindex="-1" type="button">Bitácora de Jarvis <span id="changes-count" class="count-bubble">0</span></button></div>
+                <div id="compare-panel" role="tabpanel" aria-labelledby="compare-tab">
+                  <div class="versions-grid">
+                    <article class="version-pane"><div class="version-heading"><span class="version-label">V1 <span>ORIGINAL</span></span><span class="version-key"><span class="line-dot old-dot"></span> Texto anterior</span></div><ol id="version-v1" class="contract-lines" aria-label="Contrato original, líneas numeradas"></ol><details class="hash-detail"><summary>Huella SHA-256 del original</summary><code id="hash-v1"></code></details></article>
+                    <article class="version-pane"><div class="version-heading"><span class="version-label version-label-new">V2 <span>PROPUESTA</span></span><span class="version-key"><span class="line-dot new-dot"></span> Cambio registrado</span></div><ol id="version-v2" class="contract-lines" aria-label="Propuesta V2, líneas numeradas"></ol><details class="hash-detail"><summary>Huella SHA-256 de la propuesta</summary><code id="hash-v2"></code></details></article>
+                  </div>
+                  <p class="section-footnote">Las marcas corresponden a líneas registradas en la bitácora. La comparación no acredita la validez jurídica del texto.</p>
+                </div>
+                <div id="changes-panel" role="tabpanel" aria-labelledby="changes-tab" hidden><div id="changelog" class="changelog"></div></div>
+              </section>
+
+              <section id="reports" class="panel section-panel"><div class="panel-heading"><div><p class="eyebrow">WATSON · REPORTE EJECUTIVO</p><h2>Lo que necesitas tener presente.</h2></div><span class="agent-initial" aria-hidden="true">W</span></div><p id="watson-summary" class="report-summary"></p><div class="report-columns"><div><h3 class="list-heading"><span class="amber-dot"></span> Riesgos identificados</h3><ul id="watson-risks" class="report-list"></ul></div><div><h3 class="list-heading"><span class="teal-dot"></span> Acciones propuestas</h3><ul id="watson-actions" class="report-list"></ul></div></div></section>
+
+              <section id="legal-sources" class="panel section-panel">
+                <div class="panel-heading"><div><p class="eyebrow">MURDOCK · PROCEDENCIA JURÍDICA</p><h2>Qué fuentes respaldan este expediente.</h2></div><span id="legal-register-state" class="badge badge-amber">SIN CONFIGURAR</span></div>
+                <p id="legal-coverage" class="report-summary">La jurisdicción y la cobertura deben confirmarse antes de utilizar un catálogo legal.</p>
+                <div class="source-metadata"><div><span>Fuentes citadas en este caso</span><strong id="legal-source-count">0</strong></div><div><span>Última consulta registrada</span><strong id="legal-last-read">Sin registro</strong></div><div><span>Sincronización del catálogo</span><strong id="legal-sync-state">Sin configurar</strong></div></div>
+                <div id="legal-empty" class="empty-state"><strong>No hay fuentes legales incorporadas.</strong><p>No se ha acreditado una consulta normativa. Un dictamen de ejemplo no equivale a una revisión de leyes vigentes.</p></div>
+                <div class="table-scroll" id="legal-table-region" tabindex="0" role="region" aria-label="Fuentes legales y fechas de consulta" hidden><table class="sources-table"><caption class="sr-only">Fuentes citadas en el expediente; su fecha es de consulta, no de entrada en vigor</caption><thead><tr><th scope="col">Fuente / referencia</th><th scope="col">Origen</th><th scope="col">Consulta registrada</th></tr></thead><tbody id="legal-source-rows"></tbody></table></div>
+                <p id="legal-freshness-note" class="section-footnote">La fecha de consulta no demuestra vigencia ni cobertura completa. La verificación depende de la jurisdicción, la norma aplicable y las publicaciones oficiales.</p>
+                <p id="legal-sync-detail" class="section-footnote">No se ha recibido información de un servicio de actualización. No se presupone que exista una base con todas las leyes.</p>
+              </section>
+
+              <section id="team" class="panel section-panel"><div class="panel-heading"><div><p class="eyebrow">AUDITORÍA CUÁDRUPLE</p><h2>Cuatro perspectivas. Un consenso.</h2></div><span id="audit-round" class="microcopy"></span></div><div id="audit-cards" class="audit-grid"></div><details class="team-details"><summary>Ver el escuadrón completo · 13 agentes</summary><div id="agent-roster" class="agent-roster"></div></details></section>
+
+              <section id="costs" class="panel section-panel"><div class="panel-heading"><div><p class="eyebrow">COSTOS Y TRAZABILIDAD</p><h2>Cada intervención queda registrada.</h2></div><span id="cost-pricing" class="badge badge-neutral">SIMULADO</span></div><div class="cost-summary"><div><span>Total del expediente</span><strong id="cost-total">—</strong></div><p id="cost-method"></p></div><div class="table-scroll" tabindex="0" role="region" aria-label="Tabla de costos por intervención, deslizar horizontalmente en pantallas pequeñas"><table><caption class="sr-only">Registro de costos por intervención de agente</caption><thead><tr><th scope="col">Agente / modelo</th><th scope="col" class="numeric">Tokens entrada</th><th scope="col" class="numeric">Tokens salida</th><th scope="col" class="numeric">Latencia</th><th scope="col" class="numeric">Costo USD</th></tr></thead><tbody id="cost-rows"></tbody><tfoot><tr><th scope="row">Total registrado</th><td id="tokens-input-total" class="numeric"></td><td id="tokens-output-total" class="numeric"></td><td id="latency-total" class="numeric"></td><td id="cost-table-total" class="numeric"></td></tr></tfoot></table></div></section>
+            </div>
+
+            <aside class="secondary-column" aria-label="Contexto y controles del caso">
+              <section class="panel glenn-panel"><div class="glenn-heading"><span class="agent-initial glenn-initial" aria-hidden="true">G</span><div><p class="eyebrow">GLENN RADARS</p><h2>En palabras claras.</h2></div></div><p id="glenn-explanation"></p>
+                <div class="voice-control"><div class="voice-heading"><span class="waveform" aria-hidden="true">▁▃▆▂▇▃▅▁</span><div><strong>Conversar con Glenn</strong><span>ElevenLabs · voz por activación explícita</span></div></div><p class="voice-disclosure">Al conectar, el navegador solicitará acceso al micrófono y enviará tu voz a ElevenLabs. Puede consumir el saldo de tu cuenta. La sesión se cierra al ocultar esta página.</p><div class="voice-actions"><button class="button button-secondary" id="voice-connect" type="button" disabled>Conectar voz</button><button class="button button-secondary" id="voice-disconnect" type="button" disabled>Desconectar</button></div><p id="voice-status" class="voice-status" role="status" aria-live="polite">Desactivado en la demostración. No se carga el SDK ni se solicita el micrófono.</p></div>
+              </section>
+              <section class="panel context-panel"><div class="panel-heading"><h2>Contexto del trato</h2><span class="small-agent">JANE</span></div><dl id="context-fields" class="context-fields"></dl><h3 class="list-heading">Objetivos declarados</h3><ul id="context-objectives" class="compact-list"></ul></section>
+              <section class="panel controls-panel"><div class="panel-heading"><h2>Guardrails</h2><span class="small-agent">CONTROL</span></div><div id="guardrail-list" class="guardrail-list"></div><div class="legal-source-note"><strong>Base jurídica</strong><p id="legal-basis-note"></p></div></section>
+              <section class="panel integrations-panel"><div class="panel-heading"><h2>Conexiones</h2><span class="small-tag" id="integration-overall">SIN PRUEBA</span></div><ul class="integration-list"><li><span>LLM / Structured Outputs</span><span class="integration-state" id="integration-llm">Sin comprobar</span></li><li><span>Telegram</span><span class="integration-state" id="integration-telegram">Sin comprobar</span></li><li><span>Base de datos</span><span class="integration-state" id="integration-database">Sin comprobar</span></li><li><span>n8n / webhooks</span><span class="integration-state" id="integration-n8n">Sin comprobar</span></li><li><span>ElevenLabs</span><span class="integration-state" id="integration-elevenlabs">Sin comprobar</span></li></ul><p id="integration-checked-at" class="microcopy">Sin respuesta de un backend. Abrir una consola no comprueba una integración.</p><div class="service-links"><a href="https://example.invalid/home/workflows" target="_blank" rel="noopener noreferrer">Abrir n8n ↗</a><a href="https://elevenlabs.io/app/agents" target="_blank" rel="noopener noreferrer">Abrir ElevenLabs ↗</a><a href="https://web.telegram.org/k/" target="_blank" rel="noopener noreferrer">Abrir Telegram ↗</a></div><p class="microcopy">Los estados provienen del backend configurado. «Configurado» indica que hay configuración declarada; no acredita una ejecución correcta.</p></section>
+            </aside>
+          </div>
+        </div>
+
+        <section id="operation" class="panel operation-panel"><details><summary><span><span class="eyebrow">OPERACIÓN LOCAL</span><strong>Cómo usar este chasis</strong></span><span class="details-symbol" aria-hidden="true">+</span></summary><div class="operation-body"><ol><li><strong>Explora la demostración.</strong> El JSON de <code>data/sample_case.json</code> alimenta esta vista; todos sus resultados y costos son simulados.</li><li><strong>Abre otro expediente.</strong> Usa «Abrir expediente JSON» para leer un archivo desde tu equipo. No se sube a un servidor. Si abriste el HTML directamente, este selector también funciona sin servidor HTTP.</li><li><strong>Prepara los enchufes.</strong> Copia <code>.env.example</code> a un entorno privado del servidor y revisa los workflows de n8n. Mantén el modo mock durante las pruebas. Este frontend no lee archivos <code>.env</code>.</li><li><strong>Valida antes de publicar.</strong> El script <code>scripts/validate_case_json.py</code> comprueba estructura y controles. La vista de navegador no reemplaza esa validación ni la aprobación verificable del abogado responsable.</li><li><strong>Publica sólo con autorización.</strong> Los eventos <code>push</code> y <code>pull_request</code> ejecutan validaciones. El despliegue requiere iniciar manualmente <code>workflow_dispatch</code> con <code>publish=true</code>, casos <code>live</code> con aprobación autenticada por HMAC y el entorno protegido <code>legal-approval</code>. Esta entrega no activa ese proceso.</li></ol><p>La publicación en Pages sirve únicamente para expedientes autorizados y anonimizados. Un archivo importado se presenta como contenido local sin verificación de identidad, firma ni vigencia legal. No se puede aprobar un contrato desde este panel. La web es estática: no requiere <code>npm</code>, una compilación ni una carpeta <code>dist</code>.</p></div></details></section>
+      </section>
+      <footer class="page-footer"><span>contracter<span class="footer-dot">.</span> <span class="footer-description">Trazabilidad en cada paso.</span></span><span>Operación · aprobación fuera del navegador</span></footer>
+    </main>
+  </div>
+</body>
+</html>

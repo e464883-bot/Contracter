@@ -1,0 +1,105 @@
+{
+  "name": "CONTRACTER 07 · Prueba Gemini Free",
+  "nodes": [
+    {
+      "id": "25e42555-22e0-4d64-be2e-8cd091ea563d",
+      "name": "Inicio manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "e26d8174-ae9b-4d65-8931-3b885c6e7f76",
+      "name": "Gemini · prueba ficticia",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        250,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"systemInstruction\":{\"parts\":[{\"text\":\"Devuelve un objeto JSON con status igual a ok.\"}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Prueba ficticia de conectividad.\"}]}],\"generationConfig\":{\"candidateCount\":1,\"thinkingConfig\":{\"thinkingLevel\":\"low\"},\"maxOutputTokens\":512,\"responseFormat\":{\"text\":{\"mimeType\":\"APPLICATION_JSON\",\"schema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\",\"enum\":[\"ok\"]}},\"required\":[\"status\"],\"additionalProperties\":false}}}}}",
+        "options": {
+          "timeout": 35000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Contracter · Gemini Free"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b63c03df-1952-41a9-9f1a-41c08d17e702",
+      "name": "Resultado de conexión",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { geminiProviderResponse } = (() => {\nconst OPENAI_MODEL = 'gpt-6-luna';\nconst OPENAI_URL = 'https://api.openai.com/v1/responses';\nconst OPENAI_PRICE = Object.freeze({\n  model: OPENAI_MODEL,\n  input_rate_per_million: 0.10,\n  output_rate_per_million: 0.50,\n  cached_input_rate_per_million: 0.01,\n  source: 'https://developers.openai.com/api/docs/pricing',\n});\nconst GEMINI_MODEL = 'gemini-3.5-flash-lite';\nconst GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/' + GEMINI_MODEL + ':generateContent';\n// Select explicitly only for a project confirmed to be on Gemini API Free Tier.\nconst GEMINI_FREE_PRICE = Object.freeze({\n  model: GEMINI_MODEL,\n  input_rate_per_million: 0,\n  output_rate_per_million: 0,\n  cached_input_rate_per_million: 0,\n  source: 'https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite',\n});\nconst MAX_WORKFLOW_EFFECTS = 45;\n\nfunction modelRequest({ agent, stage, system, input, schema }) {\n  if (typeof system !== 'string' || !schema || typeof schema !== 'object') {\n    throw new Error('MODEL_REQUEST_INVALID');\n  }\n  const payload = typeof input === 'string' ? input : JSON.stringify(input);\n  if (!payload || payload.length > 96000 || system.length > 16000) {\n    throw new Error('MODEL_REQUEST_TOO_LARGE');\n  }\n  const name = [agent, stage].join('_').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);\n  return {\n    model: OPENAI_MODEL,\n    store: false,\n    reasoning: { effort: 'low' },\n    max_output_tokens: agent === 'Hamilton' ? 6500 : 2200,\n    input: [\n      { role: 'developer', content: system },\n      { role: 'user', content: payload },\n    ],\n    text: { format: { type: 'json_schema', name, strict: true, schema } },\n  };\n}\n\nfunction providerResponse(http, latency_ms) {\n  const body = http?.body;\n  const usage = body?.usage;\n  const measured = Number.isSafeInteger(usage?.input_tokens) && usage.input_tokens >= 0\n    && Number.isSafeInteger(usage?.output_tokens) && usage.output_tokens >= 0;\n  const result = {\n    output: null,\n    model: typeof body?.model === 'string' ? body.model : OPENAI_MODEL,\n    usage: measured ? {\n      input_tokens: usage.input_tokens,\n      output_tokens: usage.output_tokens,\n      cached_input_tokens: usage.input_tokens_details?.cached_tokens ?? null,\n    } : null,\n    latency_ms,\n  };\n  if (http?.statusCode !== 200) {\n    const code = body?.error?.code ?? body?.error?.type;\n    if (['credit_balance_exhausted', 'insufficient_quota', 'billing_hard_limit_reached'].includes(code)) {\n      return { ...result, error: 'credit_balance_exhausted' };\n    }\n    const errors = {\n      400: 'invalid_request',\n      401: 'invalid_api_key',\n      403: 'permission_denied',\n      404: 'model_not_found',\n      429: 'rate_limit_exceeded',\n    };\n    return { ...result, error: errors[http?.statusCode] || 'provider_unavailable' };\n  }\n  const parts = (Array.isArray(body?.output) ? body.output : [])\n    .flatMap(item => Array.isArray(item?.content) ? item.content : []);\n  if (parts.some(part => part.type === 'refusal')) return { ...result, error: 'model_refusal' };\n  if (body?.status !== 'completed') return { ...result, error: 'model_incomplete' };\n  const texts = parts.filter(part => part.type === 'output_text');\n  if (texts.length !== 1 || typeof texts[0].text !== 'string' || texts[0].text.length > 128000) {\n    return { ...result, error: 'invalid_structured_output' };\n  }\n  try {\n    const output = JSON.parse(texts[0].text);\n    if (!output || typeof output !== 'object' || Array.isArray(output)) throw new Error();\n    return { ...result, output };\n  } catch {\n    return { ...result, error: 'invalid_structured_output' };\n  }\n}\n\nfunction geminiSchema(schema) {\n  // The API supports string and numeric enums. Keep boolean restrictions in\n  // the core validator while still sending the required boolean field.\n  const compatible = { ...schema };\n  if (schema.type === 'boolean') delete compatible.enum;\n  if (schema.properties) {\n    compatible.properties = Object.fromEntries(Object.entries(schema.properties).map(([key, value]) => [key, geminiSchema(value)]));\n  }\n  if (schema.items) compatible.items = geminiSchema(schema.items);\n  if (schema.anyOf) compatible.anyOf = schema.anyOf.map(geminiSchema);\n  return compatible;\n}\n\nfunction geminiModelRequest({ agent, system, input, schema }) {\n  if (typeof system !== 'string' || !schema || typeof schema !== 'object') throw new Error('MODEL_REQUEST_INVALID');\n  const payload = typeof input === 'string' ? input : JSON.stringify(input);\n  if (!payload || payload.length > 96000 || system.length > 16000) throw new Error('MODEL_REQUEST_TOO_LARGE');\n  return {\n    systemInstruction: { parts: [{ text: system }] },\n    contents: [{ role: 'user', parts: [{ text: payload }] }],\n    generationConfig: {\n      candidateCount: 1,\n      thinkingConfig: { thinkingLevel: 'low' },\n      maxOutputTokens: agent === 'Hamilton' ? 6500 : 2200,\n      responseFormat: { text: { mimeType: 'APPLICATION_JSON', schema: geminiSchema(schema) } },\n    },\n  };\n}\n\nfunction geminiUsage(metadata) {\n  const measured = value => Number.isSafeInteger(value) && value >= 0;\n  const input = measured(metadata?.promptTokenCount) ? metadata.promptTokenCount : null;\n  const visible = measured(metadata?.candidatesTokenCount) ? metadata.candidatesTokenCount : null;\n  let thoughts = measured(metadata?.thoughtsTokenCount) ? metadata.thoughtsTokenCount : null;\n  const total = measured(metadata?.totalTokenCount) ? metadata.totalTokenCount : null;\n  // Gemini REST omits zero-valued counters. Infer zero thoughts only when\n  // the reported total reconciles exactly, and leave missing cache telemetry null.\n  if (metadata?.thoughtsTokenCount === undefined && input !== null && visible !== null && total === input + visible) thoughts = 0;\n  const combined = visible !== null && thoughts !== null ? visible + thoughts : null;\n  const toolTokens = metadata?.toolUsePromptTokenCount ?? 0;\n  const reconciles = metadata?.totalTokenCount === undefined\n    || (total !== null && (input === null || total === input + combined));\n  const output = measured(combined) && reconciles && toolTokens === 0 ? combined : null;\n  if (input === null && output === null) return null;\n  return { input_tokens: input, output_tokens: output, cached_input_tokens: metadata?.cachedContentTokenCount ?? null };\n}\n\nfunction geminiProviderResponse(http, latency_ms) {\n  const body = http?.body;\n  const result = {\n    output: null,\n    model: typeof body?.modelVersion === 'string' ? body.modelVersion : null,\n    usage: geminiUsage(body?.usageMetadata),\n    latency_ms,\n  };\n  if (http?.statusCode !== 200) {\n    const error = body?.error;\n    const details = Array.isArray(error?.details) ? error.details : [];\n    if (http?.statusCode === 429 || error?.status === 'RESOURCE_EXHAUSTED') {\n      // Stop the synthetic run on its first quota response, including rate limits.\n      return { ...result, error: 'gemini_quota_exhausted' };\n    }\n    if (http?.statusCode === 503) return { ...result, error: 'gemini_capacity_unavailable' };\n    if (details.some(detail => detail?.reason === 'API_KEY_INVALID')) return { ...result, error: 'invalid_api_key' };\n    if (http?.statusCode === 400 && /schema|responseFormat/i.test(error?.message ?? '')) {\n      return { ...result, error: 'unsupported_schema' };\n    }\n    const errors = { 400: 'invalid_request', 401: 'invalid_api_key', 403: 'permission_denied', 404: 'model_not_found' };\n    return { ...result, error: errors[http?.statusCode] || 'provider_unavailable' };\n  }\n  if (body?.promptFeedback?.blockReason && body.promptFeedback.blockReason !== 'BLOCK_REASON_UNSPECIFIED') {\n    return { ...result, error: 'model_refusal' };\n  }\n  const candidates = Array.isArray(body?.candidates) ? body.candidates : [];\n  if (candidates.length !== 1) return { ...result, error: 'invalid_structured_output' };\n  const candidate = candidates[0];\n  if (['SAFETY', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'RECITATION', 'IMAGE_SAFETY'].includes(candidate?.finishReason)) {\n    return { ...result, error: 'model_refusal' };\n  }\n  if (candidate?.finishReason !== 'STOP') return { ...result, error: 'model_incomplete' };\n  const parts = Array.isArray(candidate.content?.parts) ? candidate.content.parts.filter(part => part?.thought !== true) : [];\n  if (!parts.length || parts.some(part => typeof part?.text !== 'string' || part.functionCall || part.executableCode)) {\n    return { ...result, error: 'invalid_structured_output' };\n  }\n  const text = parts.map(part => part.text).join('');\n  try {\n    if (text.length > 128000) throw new Error();\n    const output = JSON.parse(text);\n    if (!output || typeof output !== 'object' || Array.isArray(output)) throw new Error();\n    return { ...result, output };\n  } catch {\n    return { ...result, error: 'invalid_structured_output' };\n  }\n}\n\nfunction legalRequest({ query, jurisdiction }) {\n  return {\n    operation: 'legal_search',\n    p_query: query,\n    p_country_code: 'MX',\n    p_entity_code: jurisdiction.entity_code || null,\n    p_municipality_code: jurisdiction.municipality_code || null,\n    p_as_of: jurisdiction.as_of,\n    p_limit: 8,\n    p_include_unreviewed: false,\n  };\n}\n\nfunction workflowState(raw, { synthetic = false, now, uuid }) {\n  const workflow = raw.workflow === 'qa' ? 'qa' : 'full';\n  const document = typeof raw.document === 'string' ? raw.document.trim() : '';\n  if (!document || document.length > 12000 || (workflow === 'qa' && typeof raw.question !== 'string')) {\n    throw new Error('INPUT_LIMIT: texto contractual requerido (máximo 12000 caracteres).');\n  }\n  const isUuid = value => typeof value === 'string'\n    && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value);\n  const identity = typeof raw.owner_chat_id === 'string' && /^[0-9]{1,18}$/.test(raw.owner_chat_id)\n    ? raw.owner_chat_id : null;\n  const date = new Date(now);\n  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Mexico_City' }).format(date);\n  const run_id = isUuid(raw.run_id) ? raw.run_id : uuid();\n  return {\n    run_id,\n    synthetic: synthetic || raw.synthetic === true,\n    owner_chat_id: identity,\n    deadline: date.getTime() + 225000,\n    claims_ok: false,\n    effects: {},\n    input: {\n      run_id,\n      case_id: isUuid(raw.case_id) ? raw.case_id : uuid(),\n      title: typeof raw.title === 'string' ? raw.title.slice(0, 200) : 'Expediente Contracter',\n      document,\n      workflow,\n      question: workflow === 'qa' ? raw.question.slice(0, 600) : undefined,\n      clarification: raw.clarification,\n      created_at: now,\n      context: raw.context,\n      jurisdiction: { ...raw.jurisdiction, country: 'MX', as_of: raw.jurisdiction?.as_of || today },\n    },\n  };\n}\n\nfunction requestStep(state, kind, body, key = null, fingerprint = null) {\n  return {\n    state,\n    next: kind === 'model' || kind === 'research' ? 'openai' : 'store',\n    request: { kind, body, key, fingerprint, started: Date.now() },\n  };\n}\n\nfunction acceptStep(step, http, now = Date.now(), provider = 'openai') {\n  if (!['openai', 'gemini'].includes(provider)) throw new Error('UNKNOWN_MODEL_PROVIDER');\n  const { state, request } = step;\n  const { kind, key, fingerprint, started } = request;\n  const body = http?.body;\n  const ok = Number.isInteger(http?.statusCode) && http.statusCode >= 200 && http.statusCode < 300;\n  if (kind === 'claim') {\n    if (ok && body?.accepted === true) {\n      state.claims_ok = true;\n      return { state };\n    }\n    return { next: 'done', result: {\n      status: ok && body?.accepted === false ? 'DUPLICATE' : 'STORE_UNAVAILABLE',\n      run_id: state.run_id, persisted: false,\n    } };\n  }\n  if (kind === 'persist') {\n    const expectedStatus = ['QA_READY', 'NO_REWRITE_REQUIRED'].includes(state.summary.status) ? 'QA' : state.summary.status;\n    const result = {\n      ...state.summary,\n      persisted: ok && body?.run_id === state.run_id && body.status === expectedStatus\n        && body.case_id === state.summary.case_id,\n      synthetic: state.synthetic,\n    };\n    if (!result.persisted) {\n      result.status = 'STORE_UNAVAILABLE';\n      delete result.answer;\n    }\n    return { next: 'done', result };\n  }\n  if (typeof key !== 'string' || Object.hasOwn(state.effects, key)) throw new Error('EFFECT_REPLAY_INVALID');\n  let value;\n  if (kind === 'model') {\n    const normalize = provider === 'gemini' ? geminiProviderResponse : providerResponse;\n    value = normalize(http, Math.max(0, Math.round(now - started)));\n    if (value.error === 'gemini_capacity_unavailable' && !body?.usageMetadata && now < state.deadline) {\n      const retries = state.capacity_retries ??= { total: 0, by_effect: {} };\n      const attempts = retries.by_effect[key] ?? 0;\n      if (attempts < 2 && retries.total < 10 && Object.keys(state.effects).length + retries.total + 1 < MAX_WORKFLOW_EFFECTS) {\n        retries.by_effect[key] = attempts + 1;\n        retries.total++;\n        return { state };\n      }\n    }\n  }\n  else if (kind === 'legal') value = ok && Array.isArray(body?.results)\n    ? { results: body.results, as_of: body.as_of, retrieved_at: new Date(now).toISOString() }\n    : null;\n  else throw new Error('EFFECT_KIND_INVALID');\n  state.effects[key] = { fingerprint, value };\n  return { state };\n}\n\nfunction persistStep(state, report) {\n  const { status, reason, questions, qa, costs } = report;\n  state.summary = {\n    status,\n    case_id: report.case?.case_id || null,\n    run_id: state.run_id,\n    reason,\n    questions,\n    answer: qa?.answer ?? report.reports?.watson?.summary,\n    total_usd: costs?.total_usd ?? null,\n  };\n  const body = {\n    operation: 'persist',\n    run_id: state.run_id,\n    case: report.case || null,\n    status: ['QA_READY', 'NO_REWRITE_REQUIRED'].includes(status) ? 'QA' : status,\n    owner_chat_id: state.owner_chat_id,\n    synthetic: state.synthetic,\n    reason,\n    agent_logs: report.events.map(event => ({\n      event_id: event.event_id, agent: event.agent, stage: event.stage, round: event.round,\n      status: event.status || event.state, output: event.output || {}, quarantined: event.quarantined === true,\n    })),\n    usage_events: costs?.events || [],\n  };\n  // Once a run is terminal, the write needs the report and identity, not the request history.\n  delete state.effects;\n  delete state.capacity_retries;\n  delete state.input;\n  return requestStep(state, 'persist', body);\n}\n\nasync function advanceWorkflow(packet, { runLiveAudit, sha256, config, now = Date.now(), provider = 'openai' }) {\n  if (packet.next === 'done') return packet;\n  const { state } = packet;\n  if (!['openai', 'gemini'].includes(provider)) throw new Error('UNKNOWN_MODEL_PROVIDER');\n  if (provider === 'gemini' && state.synthetic !== true) {\n    return { next: 'done', result: { status: 'HELD', reason: 'GEMINI_SYNTHETIC_ONLY', run_id: state.run_id, persisted: false } };\n  }\n  if (!state.claims_ok) {\n    return requestStep(state, 'claim', {\n      operation: 'claim_run', run_id: state.run_id,\n      synthetic: state.synthetic, owner_chat_id: state.owner_chat_id,\n    });\n  }\n\n  // Replay prior adapter results. One unresolved request leaves the Code node\n  // and goes to a native HTTP node, which holds the corresponding credential.\n  const interrupted = new Error('PENDING_EFFECT');\n  let waiting;\n  function effect(kind, request, body) {\n    const key = kind + ':' + request.request_id;\n    const fingerprint = sha256(JSON.stringify(body));\n    const previous = state.effects[key];\n    if (previous) {\n      if (previous.fingerprint !== fingerprint) throw new Error('EFFECT_CHANGED_DURING_REPLAY');\n      return previous.value;\n    }\n    if (now > state.deadline || Object.keys(state.effects).length + (state.capacity_retries?.total ?? 0) >= MAX_WORKFLOW_EFFECTS) {\n      return kind === 'legal' ? null : { output: null, usage: null, error: 'run_budget_exceeded' };\n    }\n    waiting = requestStep(state, kind, body, key, fingerprint);\n    throw interrupted;\n  }\n  try {\n    const report = await runLiveAudit(state.input, {\n      sha256,\n      invokeModel: request => {\n        let body;\n        try {\n          body = provider === 'gemini' ? geminiModelRequest(request) : modelRequest(request);\n        } catch {\n          return { output: null, usage: null, error: 'invalid_request' };\n        }\n        return effect('model', request, body);\n      },\n      searchLegal: request => effect('legal', request, legalRequest(request)),\n    }, config);\n    return persistStep(state, report);\n  } catch (error) {\n    if (error === interrupted) return waiting;\n    if (error?.name !== 'LiveAuditInputError') throw error;\n    return persistStep(state, {\n      status: 'HELD',\n      case_id: state.input.case_id,\n      reason: error.code || 'INVALID_INPUT',\n      events: [],\n      costs: { currency: 'USD', pricing_status: 'unverified', total_usd: null, events: [] },\n    });\n  }\n}\n\nreturn { geminiProviderResponse };\n})();\nconst http = $input.first().json;\nconst reply = geminiProviderResponse(http, 0);\nreturn [{json:{\n  connected: http.statusCode === 200 && reply.model === \"gemini-3.5-flash-lite\" && !reply.error\n    && reply.output?.status === 'ok' && Object.keys(reply.output).length === 1,\n  http_status: http.statusCode ?? null,\n  provider_error: reply.error ?? null,\n  model: reply.model ?? null,\n  usage: reply.usage,\n}}];"
+      }
+    }
+  ],
+  "connections": {
+    "Inicio manual": {
+      "main": [
+        [
+          {
+            "node": "Gemini · prueba ficticia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini · prueba ficticia": {
+      "main": [
+        [
+          {
+            "node": "Resultado de conexión",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "timezone": "America/Mexico_City"
+  },
+  "active": false,
+  "pinData": {}
+}

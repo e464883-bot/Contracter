@@ -1,0 +1,669 @@
+{
+  "name": "CONTRACTER V2 · Telegram conversacional",
+  "nodes": [
+    {
+      "id": "6c404c48-daa1-45e1-854b-18bf5108328d",
+      "name": "Entrada del bot privado",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "0c0eef8e-6470-4cf4-a885-4fef4f8f606b",
+      "name": "Identificar chat autorizado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { conversationAccess } = (() => {\nconst uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;\nconst maxDocumentChars = 12_000;\nconst maxAttachmentBytes = 36_000;\nconst maxQuestionChars = 600;\nconst empty = { active: null, pending: null };\nconst analysisNotice = 'Advertencia. Contracter está trabajando con Gemini Free. Puede cometer errores.';\nconst uploadHelp = 'Envía un .txt UTF-8 o pega el texto después de escribir “Contrato:” en una línea aparte.';\nconst reportRequests = {\n  experto: {\n    label: 'Reporte experto',\n    question: 'Resume las obligaciones, montos, plazos y dependencias del contrato. Para cada riesgo operativo, indica su cláusula, qué falta por aclarar y una acción para la parte que consulta.',\n  },\n  ejecutivo: {\n    label: 'Reporte ejecutivo',\n    question: 'Resume en español la decisión comercial que plantea el contrato. Indica compromisos principales, costo o beneficio calculable, riesgos prioritarios y qué puntos conviene negociar antes de firmar.',\n  },\n  abogado: {\n    label: 'Cláusulas para revisar con un abogado',\n    question: 'Enumera las cláusulas del contrato que merecen revisión por su redacción, alcance o asimetría. Para cada una, indica su referencia, un fragmento textual comprobable y la pregunta que conviene plantear al revisor.',\n  },\n  storytelling: {\n    label: 'Storytelling',\n    question: 'Explica el contrato con una escena breve y sencilla. Distingue lo que las partes prometen, lo que ocurre si se cumple y lo que queda abierto si algo sale mal. Identifica como ejemplos los escenarios hipotéticos.',\n  },\n};\nconst menu = [\n  'Hola, soy Contracter. ' + uploadHelp,\n  analysisNotice,\n  'Con un contrato activo, escribe una pregunta o pídeme que lo audite.',\n  '/pregunta o /consulta · pregunta sobre el contrato',\n  '/auditar · revisa cláusulas y propone cambios',\n  '/reporte ejecutivo, /reporte experto o /reporte abogado · cambia el enfoque de la respuesta',\n  '/storytelling · explica el contrato con un ejemplo',\n  '/fuentes · consulta documentos oficiales y busca fragmentos',\n  '/expediente · muestra el ID y el estado del caso activo',\n  '/revisar · consulta la revisión humana',\n  '/reset · limpia el caso activo para empezar de nuevo',\n].join('\\n');\n\nfunction toId(value) {\n  return /^[1-9][0-9]{0,17}$/.test(String(value ?? '')) ? String(value) : null;\n}\n\nfunction conversationAccess(update, config) {\n  const message = update?.message;\n  const chat = toId(message?.chat?.id);\n  const actor = toId(message?.from?.id);\n  if (!chat || !actor || message.chat.type !== 'private'\n    || !Number.isSafeInteger(message.message_id) || message.message_id < 1\n    || !Number.isSafeInteger(update.update_id) || update.update_id < 0) return null;\n  const allowed = [config, ...(config.allowed_chats || [])];\n  if (!allowed.some(entry => chat === toId(entry.owner_chat_id) && actor === toId(entry.owner_user_id))) return null;\n  return { chat_id: chat, message_id: message.message_id };\n}\n\nfunction eventId(sha256, chat, updateId, kind) {\n  const hash = sha256('contracter:telegram-v2:' + chat + ':' + updateId + ':' + kind);\n  return [hash.slice(0, 8), hash.slice(8, 12), '8' + hash.slice(13, 16),\n    '8' + hash.slice(17, 20), hash.slice(20, 32)].join('-');\n}\n\nfunction plainText(raw) {\n  if (typeof raw !== 'string' || /[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/.test(raw)) return null;\n  const document = raw.replace(/^\\uFEFF/, '').replace(/\\r\\n?/g, '\\n').trim();\n  return document && !document.startsWith('%PDF-')\n    && document.length <= maxDocumentChars && document.split('\\n').length <= 1500\n    && Buffer.byteLength(document, 'utf8') <= maxAttachmentBytes ? document : null;\n}\n\nfunction fileMetadata(file) {\n  if (typeof file?.file_name !== 'string' || !/\\.txt$/i.test(file.file_name)\n    || (file.mime_type !== undefined && !/^text\\/plain(?:;\\s*charset=utf-8)?$/i.test(file.mime_type))\n    || typeof file.file_id !== 'string' || !/^[A-Za-z0-9_-]{1,512}$/.test(file.file_id)\n    || !Number.isSafeInteger(file.file_size) || file.file_size < 1 || file.file_size > maxAttachmentBytes) return null;\n  return { file_id: file.file_id, file_size: file.file_size };\n}\n\nfunction sessionChange(command, state, text) {\n  return { ...command, action: 'save', text, body: {\n    operation: 'save_telegram_session', owner_chat_id: command.chat_id,\n    expected_revision: command.revision, message_id: command.message_id, state,\n  } };\n}\n\nfunction openDocument(command, document, caseId) {\n  const active = {\n    case_id: caseId, document, title: 'Contrato', context: {},\n    jurisdiction: { region: 'Federal', entity_code: null, municipality_code: null }, turns: [],\n  };\n  return sessionChange(command, { active, pending: null }, [\n    'Abrí el expediente ' + caseId + ' con el contrato que enviaste.',\n    '¿A qué parte representas y qué quieres revisar? Por ejemplo, “Soy comprador y quiero aclarar el pago”.',\n    'Pregunta lo que quieras revisar. Por ejemplo, “¿cuándo vence el pago?”. También puedes decir “audita el contrato”.',\n    analysisNotice,\n  ].join('\\n'));\n}\n\nfunction auditContext(text) {\n  const match = /^soy\\s+(?:(?:el|la)\\s+)?(comprador[ae]?|vendedor[ae]?|proveedor[ae]?|cliente|arrendador[ae]?|arrendatari[oa])(?:[ ,]+)(?:y\\s+)?(?:quiero|necesito)\\s+(.{1,470})$/iu.exec(text);\n  if (!match) return null;\n  const role = match[1].toLowerCase();\n  return { our_party: 'Parte que consulta', counterparty: 'Contraparte',\n    our_role: role, objectives: [match[2]], confirmed: true };\n}\n\nfunction auditJurisdiction(text) {\n  const match = /^regi[oó]n:\\s*([^\\n]{1,120})(?:\\nEntidad:\\s*(0[1-9]|[12][0-9]|3[0-2])(?:\\nMunicipio:\\s*(?!000)([0-9]{3}))?)?$/iu.exec(text);\n  if (!match) return null;\n  const region = match[1].trim();\n  if (!region || (!match[2] && !/^(federal|nacional)$/i.test(region)) || /TODO_|por confirmar|por definir/i.test(region)) return null;\n  return { region, entity_code: match[2] || null, municipality_code: match[3] || null };\n}\n\nfunction activeDescription(active) {\n  const status = {\n    AWAITING_HUMAN: 'Borrador V2 guardado para revisión',\n    HELD: 'Auditoría retenida',\n    CONTEXT_REQUIRED: 'Pendiente de aclaraciones para la auditoría',\n    NO_REWRITE_REQUIRED: 'Auditoría terminada con el texto original',\n  };\n  return 'Expediente activo ' + active.case_id + '\\n'\n    + (status[active.last_audit_status] || 'Contrato recibido y listo para consultar.');\n}\n\nfunction planTelegramConversation(update, access, session, sha256) {\n  if (session.last_message_id !== null && access.message_id <= session.last_message_id) return null;\n  const message = update.message;\n  const state = session.state || empty;\n  const { active, pending } = state;\n  const command = { ...access, revision: session.revision, state };\n  const reply = text => ({ ...access, action: 'reply', text });\n  const text = (typeof message.text === 'string' ? message.text : '').replace(/\\r\\n?/g, '\\n').trim();\n  const name = text.replace(/^\\/(\\w+)@ContracterExampleBot(?=\\s|$)/i, '/$1');\n  const idFor = kind => eventId(sha256, access.chat_id, update.update_id, kind);\n\n  if (/^(?:\\/reset|\\/restablecer|(?:restablecer|reiniciar|resetea) (?:el )?(?:expediente|chat|conversaci[oó]n))[.!]?$/i.test(name)) {\n    return sessionChange(command, null, 'Restablecí la conversación. Envía un nuevo contrato cuando quieras empezar. Las auditorías ya registradas se conservan.');\n  }\n  if (message.forward_origin || message.forward_date || message.media_group_id) {\n    return reply('Envía el contrato directamente en este chat como un solo archivo.');\n  }\n  const download = item => ({ ...command, action: 'download', ...item });\n  if (message.document !== undefined) {\n    const attachment = fileMetadata(message.document);\n    if (!attachment) return reply('Adjunta un .txt UTF-8 de hasta 36 000 bytes. ' + uploadHelp);\n    const item = { attachment, case_id: idFor('case') };\n    if (typeof message.caption === 'string' && /^contrato(?: de prueba| ficticio)?[.!]?$/i.test(message.caption.trim())) return download(item);\n    return sessionChange(command, { active, pending: item },\n      'Recibí el adjunto. Escribe «Confirmar» para abrir el expediente.\\n\\n' + analysisNotice);\n  }\n\n  const pasted = /^contrato(?: de prueba| ficticio)?\\s*:\\s*\\n([\\s\\S]+)$/i.exec(text);\n  if (pasted) {\n    const document = plainText(pasted[1]);\n    return document ? openDocument(command, document, idFor('case'))\n      : reply('El texto debe ser legible y tener hasta 12 000 caracteres. También puedes enviarlo como .txt.');\n  }\n  if (pending && /^(?:confirmar|confirmo|(?:s[ií][, ]+)?(?:us[eé] datos inventados|es ficticio)|confirmo que es ficticio)[.!]?$/i.test(text)) return download(pending);\n  if (/^(?:\\/(?:help|start)|ayuda|men[uú]|(?:hola|buen[oa]s? (?:d[ií]as|tardes|noches)))[!.?]?$/i.test(name)) {\n    return reply(active ? 'Hola. Seguimos con el expediente ' + active.case_id + '. Puedes hacerme una pregunta sobre el contrato.\\n\\n' + menu : menu);\n  }\n  if (/^\\/(?:demo|evaluar|estado)(?:\\s|$)/i.test(name)) {\n    const providerNote = /\\bopenai\\b/i.test(name) ? 'OpenAI puede consumir créditos.\\n' : '';\n    return reply(providerNote + (active ? activeDescription(active) + '\\n' : '') + uploadHelp + '\\n\\n' + analysisNotice);\n  }\n\n  const sourceCommand = /^\\/fuentes(?:\\s+([\\s\\S]+))?$/i.exec(name);\n  if (sourceCommand) {\n    const query = sourceCommand[1]?.trim() || '';\n    if (!query) return reply([\n      'Documentos oficiales',\n      'Busca en el Código de Comercio con /fuentes compraventa.',\n      'Código de Comercio · https://www.diputados.gob.mx/LeyesBiblio/ref/ccom.htm',\n      'Código Civil Federal · https://www.diputados.gob.mx/LeyesBiblio/ref/ccf.htm',\n      'Convención de Viena sobre compraventa internacional · https://uncitral.un.org/es/texts/salegoods/conventions/sale_of_goods/cisg',\n    ].join('\\n'));\n    if (query.length < 2 || query.length > 300 || /[\\x00-\\x1F\\x7F-\\x9F]/.test(query)) {\n      return reply('Escribe un tema de una sola línea, por ejemplo /fuentes entrega.');\n    }\n    const jurisdiction = active?.jurisdiction || { region: 'Federal', entity_code: null, municipality_code: null };\n    const asOf = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Mexico_City' }).format(new Date());\n    return { ...access, action: 'lookup', body: {\n      operation: 'legal_documental_search', query, limit: 2,\n      jurisdiction: { ...jurisdiction, country: 'MX', as_of: asOf },\n    } };\n  }\n\n  const caseCommand = /^\\/(expediente|revisar)(?:\\s+(\\S+))?$/i.exec(name);\n  if (caseCommand && (!caseCommand[2] || active?.case_id === caseCommand[2].toLowerCase())) {\n    if (!active) return reply('Todavía no abrimos un expediente. ' + uploadHelp);\n    return reply(caseCommand[1].toLowerCase() === 'revisar'\n      ? activeDescription(active) + '\\nLa revisión formal requiere un expediente autorizado.'\n      : activeDescription(active));\n  }\n  if (caseCommand) {\n    if (!uuid.test(caseCommand[2])) return reply('Incluye un ID de expediente válido o usa /expediente para consultar el caso activo.');\n    if (caseCommand[1].toLowerCase() === 'revisar') return reply('La revisión formal requiere un expediente autorizado. Usa /expediente para consultar el estado del caso activo.');\n    return { ...access, action: 'lookup', body: { operation: 'get_case', audience: 'telegram',\n      case_id: caseCommand[2].toLowerCase(), owner_chat_id: access.chat_id } };\n  }\n\n  if (!active) {\n    const hint = pending ? 'Tengo un archivo esperando tu confirmación. Escribe «Confirmar» para abrirlo.' : uploadHelp;\n    return reply(hint);\n  }\n  if (/^(?:gracias|muchas gracias|listo|ok(?:ay)?|entendido)[!. ]*$/i.test(name)) {\n    return reply('Puedes seguir preguntando sobre el mismo contrato cuando quieras.');\n  }\n  const context = auditContext(text);\n  const clarification = /^aclaraci[oó]n:\\s*(.{1,500})$/iu.exec(text)?.[1];\n  const jurisdiction = auditJurisdiction(text);\n  if (/^regi[oó]n:/i.test(text) && !jurisdiction) {\n    return reply('Puedes escribir “Región: Federal”. Para un estado, escribe su nombre después de “Región:” y agrega “Entidad:” con su clave de dos dígitos en otra línea.');\n  }\n  if (context || clarification || jurisdiction) {\n    const changes = context ? { context } : clarification ? { clarification } : { jurisdiction };\n    return sessionChange(command, { ...state, active: { ...active, ...changes } },\n      'Guardé la información para este expediente. Escribe “audita el contrato” para usarla en la revisión.');\n  }\n\n  const full = /^(?:\\/auditar|(?:por favor[, ]+)?audita(?:r)?(?:\\s+(?:el|este)\\s+contrato)?)[.!]?$/i.test(name);\n  if (full && active.last_audit_status === 'AWAITING_HUMAN') return reply(activeDescription(active));\n  if (full && active.context.confirmed !== true) {\n    return reply('Para auditarlo, dime qué parte representas y qué quieres verificar. Por ejemplo: «Soy comprador y quiero precisar los plazos de pago».');\n  }\n  const explicitQuestion = /^\\/(?:pregunta|consulta)(?:\\s+([\\s\\S]+))?$/i.exec(name);\n  const reportCommand = /^\\/reporte(?:\\s+(\\S+))?$/i.exec(name);\n  const reportKey = reportCommand ? (reportCommand[1] || 'ejecutivo').toLowerCase()\n    : /^\\/storytelling$/i.test(name) ? 'storytelling' : /^\\/cl[aá]usulas$/i.test(name) ? 'abogado' : '';\n  const report = reportKey && Object.hasOwn(reportRequests, reportKey) ? reportRequests[reportKey] : null;\n  if (reportCommand && !report) return reply('Elige /reporte ejecutivo, /reporte experto o /reporte abogado.');\n  if (name.startsWith('/') && !explicitQuestion && !full && !report) {\n    return reply('Puedes escribirme tu pregunta en lenguaje natural o usar /help para ver las opciones.');\n  }\n  let question = report ? report.question : explicitQuestion ? explicitQuestion[1] || '' : text;\n  const mentionedId = /^([a-f0-9-]{36})(?:\\s+|$)/i.exec(question);\n  if (explicitQuestion && mentionedId && uuid.test(mentionedId[1])) {\n    if (mentionedId[1].toLowerCase() !== active.case_id) {\n      return reply('Este chat está usando el expediente ' + active.case_id + '. Usa /reset para abrir otro contrato.');\n    }\n    question = question.slice(mentionedId[0].length).trim();\n  }\n  if ((!full && (!question || question.length > maxQuestionChars)) || (!text && !explicitQuestion)) {\n    return reply('Escríbeme una pregunta sobre el contrato en un mensaje de hasta 600 caracteres.');\n  }\n\n  const confirmedContext = active.context.confirmed === true ? active.context : {\n    our_party: 'Parte que consulta', counterparty: 'Contraparte', our_role: 'consulta neutral',\n    objectives: ['Entender el texto del contrato que envió el usuario.'], confirmed: true,\n  };\n  return { ...command, action: 'gemini', ...(report ? { report_label: report.label } : {}), input: {\n    workflow: full ? 'full' : 'qa', synthetic: true,\n    run_id: idFor('run'), case_id: active.case_id, owner_chat_id: access.chat_id,\n    document: active.document, title: active.title, context: confirmedContext, jurisdiction: active.jurisdiction,\n    ...(active.clarification ? { clarification: active.clarification } : {}),\n    ...(full ? {} : { question, conversation: active.turns }),\n  } };\n}\n\nfunction finishTelegramConversationDownload(command, bytes) {\n  const reject = () => ({ action: 'reply', chat_id: command.chat_id,\n    text: 'No pude leer el adjunto como .txt UTF-8. Verifica el archivo y envíalo de nuevo.' });\n  if (!Buffer.isBuffer(bytes) || bytes.length !== command.attachment.file_size\n    || bytes.length > maxAttachmentBytes) return reject();\n  const raw = bytes.toString('utf8');\n  if (!Buffer.from(raw, 'utf8').equals(bytes)) return reject();\n  const document = plainText(raw);\n  return document ? openDocument(command, document, command.case_id) : reject();\n}\n\nfunction finishTelegramConversationAudit(command, result, allowedQuestions) {\n  const { active } = command.state;\n  const qa = command.input.workflow === 'qa';\n  const answer = typeof result.answer === 'string'\n    ? result.answer.replace(/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/g, '').trim() : '';\n  let state = command.state;\n  let text;\n  if (qa && result.status === 'QA_READY' && result.persisted === true && result.source_case_id === active.case_id && answer) {\n    const turn = { question: command.input.question, answer: answer.slice(0, 1200) };\n    state = { ...state, active: { ...active, turns: [...active.turns, turn].slice(-3) } };\n    text = (command.report_label ? command.report_label + '\\n\\n' : '') + answer.slice(0, 3500) + '\\n\\n' + analysisNotice;\n  } else if (!qa && result.status === 'AWAITING_HUMAN' && result.case_id === active.case_id && result.persisted === true) {\n    text = 'Guardé el borrador V2 del expediente ' + active.case_id + '. Puedes seguir preguntando sobre el contrato o consultar /revisar.\\n\\n' + analysisNotice;\n  } else if (result.status === 'CONTEXT_REQUIRED') {\n    const questions = Array.isArray(result.questions) ? [...new Set(result.questions)]\n      .filter(question => allowedQuestions.includes(question)).slice(0, 5) : [];\n    text = ['Necesito aclarar algunos datos del expediente.', ...questions,\n      'Escríbeme «Aclaración:» seguida de los datos y vuelve a pedirme que lo audite.'].join('\\n');\n  } else if (result.status === 'NO_REWRITE_REQUIRED') {\n    text = 'La auditoría recomienda conservar el texto actual. Puedes seguir preguntando sobre sus cláusulas.\\n\\n' + analysisNotice;\n  } else if (result.status === 'HELD') {\n    const reason = result.reason || '';\n    if (reason === 'AFTON_TEST_CANARY') {\n      text = 'Afton detuvo el documento al encontrar el marcador del ejercicio de seguridad. El expediente sigue disponible para reemplazar el archivo con /reset.';\n    } else if (reason === 'PROVIDER_QUOTA_EXHAUSTED' || reason === 'PROVIDER_CAPACITY_UNAVAILABLE') {\n      text = 'Gemini Free está temporalmente fuera de cuota o saturado. El expediente sigue activo y puedes reintentar más tarde.';\n    } else if (/LEGAL|SOURCE|GROUNDING/.test(reason)) {\n      text = 'La auditoría quedó retenida porque hacen falta fuentes jurídicas revisadas para este caso. Puedes seguir consultando qué dice el contrato.';\n    } else {\n      text = 'La revisión quedó retenida. Código ' + (/^[A-Z0-9_]{1,90}$/.test(reason) ? reason : 'CONTROL_PENDIENTE') + '.';\n    }\n  } else {\n    text = 'El servicio de auditoría no pudo completar la solicitud. El contrato sigue activo.';\n  }\n  if (!qa && ['AWAITING_HUMAN', 'HELD', 'CONTEXT_REQUIRED', 'NO_REWRITE_REQUIRED'].includes(result.status)\n    && (result.status !== 'AWAITING_HUMAN' || (result.case_id === active.case_id && result.persisted === true))) {\n    state = { ...state, active: { ...active, last_audit_status: result.status } };\n  }\n  return sessionChange(command, state, text);\n}\n\nreturn { conversationAccess };\n})();\n\nconst update = $input.first().json;\nconst access = conversationAccess(update, {\"owner_chat_id\":\"TODO_TELEGRAM_CHAT_ID\",\"owner_user_id\":\"TODO_TELEGRAM_OWNER_ID\",\"allowed_chats\":[]});\nreturn access ? [{json:{update,access,body:{operation:'get_telegram_session',owner_chat_id:access.chat_id}}}] : [];\n"
+      }
+    },
+    {
+      "id": "5dc86c16-3772-4385-b0d6-ab4a12f3dc7e",
+      "name": "Leer sesión privada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://abcdefghijklmnopqrst.supabase.co/functions/v1/contracter-store",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 35000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Contracter · Lectura Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "c1f961c6-61c5-4aeb-9e70-732274ca9f56",
+      "name": "Interpretar mensaje",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { planTelegramConversation } = (() => {\nconst uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;\nconst maxDocumentChars = 12_000;\nconst maxAttachmentBytes = 36_000;\nconst maxQuestionChars = 600;\nconst empty = { active: null, pending: null };\nconst analysisNotice = 'Advertencia. Contracter está trabajando con Gemini Free. Puede cometer errores.';\nconst uploadHelp = 'Envía un .txt UTF-8 o pega el texto después de escribir “Contrato:” en una línea aparte.';\nconst reportRequests = {\n  experto: {\n    label: 'Reporte experto',\n    question: 'Resume las obligaciones, montos, plazos y dependencias del contrato. Para cada riesgo operativo, indica su cláusula, qué falta por aclarar y una acción para la parte que consulta.',\n  },\n  ejecutivo: {\n    label: 'Reporte ejecutivo',\n    question: 'Resume en español la decisión comercial que plantea el contrato. Indica compromisos principales, costo o beneficio calculable, riesgos prioritarios y qué puntos conviene negociar antes de firmar.',\n  },\n  abogado: {\n    label: 'Cláusulas para revisar con un abogado',\n    question: 'Enumera las cláusulas del contrato que merecen revisión por su redacción, alcance o asimetría. Para cada una, indica su referencia, un fragmento textual comprobable y la pregunta que conviene plantear al revisor.',\n  },\n  storytelling: {\n    label: 'Storytelling',\n    question: 'Explica el contrato con una escena breve y sencilla. Distingue lo que las partes prometen, lo que ocurre si se cumple y lo que queda abierto si algo sale mal. Identifica como ejemplos los escenarios hipotéticos.',\n  },\n};\nconst menu = [\n  'Hola, soy Contracter. ' + uploadHelp,\n  analysisNotice,\n  'Con un contrato activo, escribe una pregunta o pídeme que lo audite.',\n  '/pregunta o /consulta · pregunta sobre el contrato',\n  '/auditar · revisa cláusulas y propone cambios',\n  '/reporte ejecutivo, /reporte experto o /reporte abogado · cambia el enfoque de la respuesta',\n  '/storytelling · explica el contrato con un ejemplo',\n  '/fuentes · consulta documentos oficiales y busca fragmentos',\n  '/expediente · muestra el ID y el estado del caso activo',\n  '/revisar · consulta la revisión humana',\n  '/reset · limpia el caso activo para empezar de nuevo',\n].join('\\n');\n\nfunction toId(value) {\n  return /^[1-9][0-9]{0,17}$/.test(String(value ?? '')) ? String(value) : null;\n}\n\nfunction conversationAccess(update, config) {\n  const message = update?.message;\n  const chat = toId(message?.chat?.id);\n  const actor = toId(message?.from?.id);\n  if (!chat || !actor || message.chat.type !== 'private'\n    || !Number.isSafeInteger(message.message_id) || message.message_id < 1\n    || !Number.isSafeInteger(update.update_id) || update.update_id < 0) return null;\n  const allowed = [config, ...(config.allowed_chats || [])];\n  if (!allowed.some(entry => chat === toId(entry.owner_chat_id) && actor === toId(entry.owner_user_id))) return null;\n  return { chat_id: chat, message_id: message.message_id };\n}\n\nfunction eventId(sha256, chat, updateId, kind) {\n  const hash = sha256('contracter:telegram-v2:' + chat + ':' + updateId + ':' + kind);\n  return [hash.slice(0, 8), hash.slice(8, 12), '8' + hash.slice(13, 16),\n    '8' + hash.slice(17, 20), hash.slice(20, 32)].join('-');\n}\n\nfunction plainText(raw) {\n  if (typeof raw !== 'string' || /[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/.test(raw)) return null;\n  const document = raw.replace(/^\\uFEFF/, '').replace(/\\r\\n?/g, '\\n').trim();\n  return document && !document.startsWith('%PDF-')\n    && document.length <= maxDocumentChars && document.split('\\n').length <= 1500\n    && Buffer.byteLength(document, 'utf8') <= maxAttachmentBytes ? document : null;\n}\n\nfunction fileMetadata(file) {\n  if (typeof file?.file_name !== 'string' || !/\\.txt$/i.test(file.file_name)\n    || (file.mime_type !== undefined && !/^text\\/plain(?:;\\s*charset=utf-8)?$/i.test(file.mime_type))\n    || typeof file.file_id !== 'string' || !/^[A-Za-z0-9_-]{1,512}$/.test(file.file_id)\n    || !Number.isSafeInteger(file.file_size) || file.file_size < 1 || file.file_size > maxAttachmentBytes) return null;\n  return { file_id: file.file_id, file_size: file.file_size };\n}\n\nfunction sessionChange(command, state, text) {\n  return { ...command, action: 'save', text, body: {\n    operation: 'save_telegram_session', owner_chat_id: command.chat_id,\n    expected_revision: command.revision, message_id: command.message_id, state,\n  } };\n}\n\nfunction openDocument(command, document, caseId) {\n  const active = {\n    case_id: caseId, document, title: 'Contrato', context: {},\n    jurisdiction: { region: 'Federal', entity_code: null, municipality_code: null }, turns: [],\n  };\n  return sessionChange(command, { active, pending: null }, [\n    'Abrí el expediente ' + caseId + ' con el contrato que enviaste.',\n    '¿A qué parte representas y qué quieres revisar? Por ejemplo, “Soy comprador y quiero aclarar el pago”.',\n    'Pregunta lo que quieras revisar. Por ejemplo, “¿cuándo vence el pago?”. También puedes decir “audita el contrato”.',\n    analysisNotice,\n  ].join('\\n'));\n}\n\nfunction auditContext(text) {\n  const match = /^soy\\s+(?:(?:el|la)\\s+)?(comprador[ae]?|vendedor[ae]?|proveedor[ae]?|cliente|arrendador[ae]?|arrendatari[oa])(?:[ ,]+)(?:y\\s+)?(?:quiero|necesito)\\s+(.{1,470})$/iu.exec(text);\n  if (!match) return null;\n  const role = match[1].toLowerCase();\n  return { our_party: 'Parte que consulta', counterparty: 'Contraparte',\n    our_role: role, objectives: [match[2]], confirmed: true };\n}\n\nfunction auditJurisdiction(text) {\n  const match = /^regi[oó]n:\\s*([^\\n]{1,120})(?:\\nEntidad:\\s*(0[1-9]|[12][0-9]|3[0-2])(?:\\nMunicipio:\\s*(?!000)([0-9]{3}))?)?$/iu.exec(text);\n  if (!match) return null;\n  const region = match[1].trim();\n  if (!region || (!match[2] && !/^(federal|nacional)$/i.test(region)) || /TODO_|por confirmar|por definir/i.test(region)) return null;\n  return { region, entity_code: match[2] || null, municipality_code: match[3] || null };\n}\n\nfunction activeDescription(active) {\n  const status = {\n    AWAITING_HUMAN: 'Borrador V2 guardado para revisión',\n    HELD: 'Auditoría retenida',\n    CONTEXT_REQUIRED: 'Pendiente de aclaraciones para la auditoría',\n    NO_REWRITE_REQUIRED: 'Auditoría terminada con el texto original',\n  };\n  return 'Expediente activo ' + active.case_id + '\\n'\n    + (status[active.last_audit_status] || 'Contrato recibido y listo para consultar.');\n}\n\nfunction planTelegramConversation(update, access, session, sha256) {\n  if (session.last_message_id !== null && access.message_id <= session.last_message_id) return null;\n  const message = update.message;\n  const state = session.state || empty;\n  const { active, pending } = state;\n  const command = { ...access, revision: session.revision, state };\n  const reply = text => ({ ...access, action: 'reply', text });\n  const text = (typeof message.text === 'string' ? message.text : '').replace(/\\r\\n?/g, '\\n').trim();\n  const name = text.replace(/^\\/(\\w+)@ContracterExampleBot(?=\\s|$)/i, '/$1');\n  const idFor = kind => eventId(sha256, access.chat_id, update.update_id, kind);\n\n  if (/^(?:\\/reset|\\/restablecer|(?:restablecer|reiniciar|resetea) (?:el )?(?:expediente|chat|conversaci[oó]n))[.!]?$/i.test(name)) {\n    return sessionChange(command, null, 'Restablecí la conversación. Envía un nuevo contrato cuando quieras empezar. Las auditorías ya registradas se conservan.');\n  }\n  if (message.forward_origin || message.forward_date || message.media_group_id) {\n    return reply('Envía el contrato directamente en este chat como un solo archivo.');\n  }\n  const download = item => ({ ...command, action: 'download', ...item });\n  if (message.document !== undefined) {\n    const attachment = fileMetadata(message.document);\n    if (!attachment) return reply('Adjunta un .txt UTF-8 de hasta 36 000 bytes. ' + uploadHelp);\n    const item = { attachment, case_id: idFor('case') };\n    if (typeof message.caption === 'string' && /^contrato(?: de prueba| ficticio)?[.!]?$/i.test(message.caption.trim())) return download(item);\n    return sessionChange(command, { active, pending: item },\n      'Recibí el adjunto. Escribe «Confirmar» para abrir el expediente.\\n\\n' + analysisNotice);\n  }\n\n  const pasted = /^contrato(?: de prueba| ficticio)?\\s*:\\s*\\n([\\s\\S]+)$/i.exec(text);\n  if (pasted) {\n    const document = plainText(pasted[1]);\n    return document ? openDocument(command, document, idFor('case'))\n      : reply('El texto debe ser legible y tener hasta 12 000 caracteres. También puedes enviarlo como .txt.');\n  }\n  if (pending && /^(?:confirmar|confirmo|(?:s[ií][, ]+)?(?:us[eé] datos inventados|es ficticio)|confirmo que es ficticio)[.!]?$/i.test(text)) return download(pending);\n  if (/^(?:\\/(?:help|start)|ayuda|men[uú]|(?:hola|buen[oa]s? (?:d[ií]as|tardes|noches)))[!.?]?$/i.test(name)) {\n    return reply(active ? 'Hola. Seguimos con el expediente ' + active.case_id + '. Puedes hacerme una pregunta sobre el contrato.\\n\\n' + menu : menu);\n  }\n  if (/^\\/(?:demo|evaluar|estado)(?:\\s|$)/i.test(name)) {\n    const providerNote = /\\bopenai\\b/i.test(name) ? 'OpenAI puede consumir créditos.\\n' : '';\n    return reply(providerNote + (active ? activeDescription(active) + '\\n' : '') + uploadHelp + '\\n\\n' + analysisNotice);\n  }\n\n  const sourceCommand = /^\\/fuentes(?:\\s+([\\s\\S]+))?$/i.exec(name);\n  if (sourceCommand) {\n    const query = sourceCommand[1]?.trim() || '';\n    if (!query) return reply([\n      'Documentos oficiales',\n      'Busca en el Código de Comercio con /fuentes compraventa.',\n      'Código de Comercio · https://www.diputados.gob.mx/LeyesBiblio/ref/ccom.htm',\n      'Código Civil Federal · https://www.diputados.gob.mx/LeyesBiblio/ref/ccf.htm',\n      'Convención de Viena sobre compraventa internacional · https://uncitral.un.org/es/texts/salegoods/conventions/sale_of_goods/cisg',\n    ].join('\\n'));\n    if (query.length < 2 || query.length > 300 || /[\\x00-\\x1F\\x7F-\\x9F]/.test(query)) {\n      return reply('Escribe un tema de una sola línea, por ejemplo /fuentes entrega.');\n    }\n    const jurisdiction = active?.jurisdiction || { region: 'Federal', entity_code: null, municipality_code: null };\n    const asOf = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Mexico_City' }).format(new Date());\n    return { ...access, action: 'lookup', body: {\n      operation: 'legal_documental_search', query, limit: 2,\n      jurisdiction: { ...jurisdiction, country: 'MX', as_of: asOf },\n    } };\n  }\n\n  const caseCommand = /^\\/(expediente|revisar)(?:\\s+(\\S+))?$/i.exec(name);\n  if (caseCommand && (!caseCommand[2] || active?.case_id === caseCommand[2].toLowerCase())) {\n    if (!active) return reply('Todavía no abrimos un expediente. ' + uploadHelp);\n    return reply(caseCommand[1].toLowerCase() === 'revisar'\n      ? activeDescription(active) + '\\nLa revisión formal requiere un expediente autorizado.'\n      : activeDescription(active));\n  }\n  if (caseCommand) {\n    if (!uuid.test(caseCommand[2])) return reply('Incluye un ID de expediente válido o usa /expediente para consultar el caso activo.');\n    if (caseCommand[1].toLowerCase() === 'revisar') return reply('La revisión formal requiere un expediente autorizado. Usa /expediente para consultar el estado del caso activo.');\n    return { ...access, action: 'lookup', body: { operation: 'get_case', audience: 'telegram',\n      case_id: caseCommand[2].toLowerCase(), owner_chat_id: access.chat_id } };\n  }\n\n  if (!active) {\n    const hint = pending ? 'Tengo un archivo esperando tu confirmación. Escribe «Confirmar» para abrirlo.' : uploadHelp;\n    return reply(hint);\n  }\n  if (/^(?:gracias|muchas gracias|listo|ok(?:ay)?|entendido)[!. ]*$/i.test(name)) {\n    return reply('Puedes seguir preguntando sobre el mismo contrato cuando quieras.');\n  }\n  const context = auditContext(text);\n  const clarification = /^aclaraci[oó]n:\\s*(.{1,500})$/iu.exec(text)?.[1];\n  const jurisdiction = auditJurisdiction(text);\n  if (/^regi[oó]n:/i.test(text) && !jurisdiction) {\n    return reply('Puedes escribir “Región: Federal”. Para un estado, escribe su nombre después de “Región:” y agrega “Entidad:” con su clave de dos dígitos en otra línea.');\n  }\n  if (context || clarification || jurisdiction) {\n    const changes = context ? { context } : clarification ? { clarification } : { jurisdiction };\n    return sessionChange(command, { ...state, active: { ...active, ...changes } },\n      'Guardé la información para este expediente. Escribe “audita el contrato” para usarla en la revisión.');\n  }\n\n  const full = /^(?:\\/auditar|(?:por favor[, ]+)?audita(?:r)?(?:\\s+(?:el|este)\\s+contrato)?)[.!]?$/i.test(name);\n  if (full && active.last_audit_status === 'AWAITING_HUMAN') return reply(activeDescription(active));\n  if (full && active.context.confirmed !== true) {\n    return reply('Para auditarlo, dime qué parte representas y qué quieres verificar. Por ejemplo: «Soy comprador y quiero precisar los plazos de pago».');\n  }\n  const explicitQuestion = /^\\/(?:pregunta|consulta)(?:\\s+([\\s\\S]+))?$/i.exec(name);\n  const reportCommand = /^\\/reporte(?:\\s+(\\S+))?$/i.exec(name);\n  const reportKey = reportCommand ? (reportCommand[1] || 'ejecutivo').toLowerCase()\n    : /^\\/storytelling$/i.test(name) ? 'storytelling' : /^\\/cl[aá]usulas$/i.test(name) ? 'abogado' : '';\n  const report = reportKey && Object.hasOwn(reportRequests, reportKey) ? reportRequests[reportKey] : null;\n  if (reportCommand && !report) return reply('Elige /reporte ejecutivo, /reporte experto o /reporte abogado.');\n  if (name.startsWith('/') && !explicitQuestion && !full && !report) {\n    return reply('Puedes escribirme tu pregunta en lenguaje natural o usar /help para ver las opciones.');\n  }\n  let question = report ? report.question : explicitQuestion ? explicitQuestion[1] || '' : text;\n  const mentionedId = /^([a-f0-9-]{36})(?:\\s+|$)/i.exec(question);\n  if (explicitQuestion && mentionedId && uuid.test(mentionedId[1])) {\n    if (mentionedId[1].toLowerCase() !== active.case_id) {\n      return reply('Este chat está usando el expediente ' + active.case_id + '. Usa /reset para abrir otro contrato.');\n    }\n    question = question.slice(mentionedId[0].length).trim();\n  }\n  if ((!full && (!question || question.length > maxQuestionChars)) || (!text && !explicitQuestion)) {\n    return reply('Escríbeme una pregunta sobre el contrato en un mensaje de hasta 600 caracteres.');\n  }\n\n  const confirmedContext = active.context.confirmed === true ? active.context : {\n    our_party: 'Parte que consulta', counterparty: 'Contraparte', our_role: 'consulta neutral',\n    objectives: ['Entender el texto del contrato que envió el usuario.'], confirmed: true,\n  };\n  return { ...command, action: 'gemini', ...(report ? { report_label: report.label } : {}), input: {\n    workflow: full ? 'full' : 'qa', synthetic: true,\n    run_id: idFor('run'), case_id: active.case_id, owner_chat_id: access.chat_id,\n    document: active.document, title: active.title, context: confirmedContext, jurisdiction: active.jurisdiction,\n    ...(active.clarification ? { clarification: active.clarification } : {}),\n    ...(full ? {} : { question, conversation: active.turns }),\n  } };\n}\n\nfunction finishTelegramConversationDownload(command, bytes) {\n  const reject = () => ({ action: 'reply', chat_id: command.chat_id,\n    text: 'No pude leer el adjunto como .txt UTF-8. Verifica el archivo y envíalo de nuevo.' });\n  if (!Buffer.isBuffer(bytes) || bytes.length !== command.attachment.file_size\n    || bytes.length > maxAttachmentBytes) return reject();\n  const raw = bytes.toString('utf8');\n  if (!Buffer.from(raw, 'utf8').equals(bytes)) return reject();\n  const document = plainText(raw);\n  return document ? openDocument(command, document, command.case_id) : reject();\n}\n\nfunction finishTelegramConversationAudit(command, result, allowedQuestions) {\n  const { active } = command.state;\n  const qa = command.input.workflow === 'qa';\n  const answer = typeof result.answer === 'string'\n    ? result.answer.replace(/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/g, '').trim() : '';\n  let state = command.state;\n  let text;\n  if (qa && result.status === 'QA_READY' && result.persisted === true && result.source_case_id === active.case_id && answer) {\n    const turn = { question: command.input.question, answer: answer.slice(0, 1200) };\n    state = { ...state, active: { ...active, turns: [...active.turns, turn].slice(-3) } };\n    text = (command.report_label ? command.report_label + '\\n\\n' : '') + answer.slice(0, 3500) + '\\n\\n' + analysisNotice;\n  } else if (!qa && result.status === 'AWAITING_HUMAN' && result.case_id === active.case_id && result.persisted === true) {\n    text = 'Guardé el borrador V2 del expediente ' + active.case_id + '. Puedes seguir preguntando sobre el contrato o consultar /revisar.\\n\\n' + analysisNotice;\n  } else if (result.status === 'CONTEXT_REQUIRED') {\n    const questions = Array.isArray(result.questions) ? [...new Set(result.questions)]\n      .filter(question => allowedQuestions.includes(question)).slice(0, 5) : [];\n    text = ['Necesito aclarar algunos datos del expediente.', ...questions,\n      'Escríbeme «Aclaración:» seguida de los datos y vuelve a pedirme que lo audite.'].join('\\n');\n  } else if (result.status === 'NO_REWRITE_REQUIRED') {\n    text = 'La auditoría recomienda conservar el texto actual. Puedes seguir preguntando sobre sus cláusulas.\\n\\n' + analysisNotice;\n  } else if (result.status === 'HELD') {\n    const reason = result.reason || '';\n    if (reason === 'AFTON_TEST_CANARY') {\n      text = 'Afton detuvo el documento al encontrar el marcador del ejercicio de seguridad. El expediente sigue disponible para reemplazar el archivo con /reset.';\n    } else if (reason === 'PROVIDER_QUOTA_EXHAUSTED' || reason === 'PROVIDER_CAPACITY_UNAVAILABLE') {\n      text = 'Gemini Free está temporalmente fuera de cuota o saturado. El expediente sigue activo y puedes reintentar más tarde.';\n    } else if (/LEGAL|SOURCE|GROUNDING/.test(reason)) {\n      text = 'La auditoría quedó retenida porque hacen falta fuentes jurídicas revisadas para este caso. Puedes seguir consultando qué dice el contrato.';\n    } else {\n      text = 'La revisión quedó retenida. Código ' + (/^[A-Z0-9_]{1,90}$/.test(reason) ? reason : 'CONTROL_PENDIENTE') + '.';\n    }\n  } else {\n    text = 'El servicio de auditoría no pudo completar la solicitud. El contrato sigue activo.';\n  }\n  if (!qa && ['AWAITING_HUMAN', 'HELD', 'CONTEXT_REQUIRED', 'NO_REWRITE_REQUIRED'].includes(result.status)\n    && (result.status !== 'AWAITING_HUMAN' || (result.case_id === active.case_id && result.persisted === true))) {\n    state = { ...state, active: { ...active, last_audit_status: result.status } };\n  }\n  return sessionChange(command, state, text);\n}\n\nreturn { planTelegramConversation };\n})();\n\nconst {createHash} = require('crypto');\nconst {update,access} = $(\"Identificar chat autorizado\").itemMatching(0).json;\nconst response = $input.first().json;\nconst session = response.body;\nif (response.statusCode !== 200 || !Number.isSafeInteger(session?.revision)\n  || (session.last_message_id !== null && !Number.isSafeInteger(session.last_message_id))) {\n  return [{json:{action:'reply',chat_id:access.chat_id,text:'No pude abrir la sesión del chat. Intenta de nuevo en un momento.'}}];\n}\nconst command = planTelegramConversation(update, access, session,\n  value => createHash('sha256').update(value, 'utf8').digest('hex'));\nreturn command ? [{json:command}] : [];\n"
+      }
+    },
+    {
+      "id": "a904e15f-b050-431f-8aef-e1aa8699f9b9",
+      "name": "¿Descargar adjunto de prueba?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d7ae274f-b71b-4bdd-b5e5-f3de4fbc4ec3",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "download",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f7f6c17a-0620-4ca8-b02d-eb8bd1e2011c",
+      "name": "Descargar .txt privado",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1100,
+        -220
+      ],
+      "parameters": {
+        "resource": "file",
+        "operation": "get",
+        "fileId": "={{ $json.attachment.file_id }}",
+        "download": true,
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "name": "Contracter · Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b3c72505-b3dd-4d82-a015-b75f1fb8c766",
+      "name": "Abrir contrato recibido",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        -220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { finishTelegramConversationDownload } = (() => {\nconst uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;\nconst maxDocumentChars = 12_000;\nconst maxAttachmentBytes = 36_000;\nconst maxQuestionChars = 600;\nconst empty = { active: null, pending: null };\nconst analysisNotice = 'Advertencia. Contracter está trabajando con Gemini Free. Puede cometer errores.';\nconst uploadHelp = 'Envía un .txt UTF-8 o pega el texto después de escribir “Contrato:” en una línea aparte.';\nconst reportRequests = {\n  experto: {\n    label: 'Reporte experto',\n    question: 'Resume las obligaciones, montos, plazos y dependencias del contrato. Para cada riesgo operativo, indica su cláusula, qué falta por aclarar y una acción para la parte que consulta.',\n  },\n  ejecutivo: {\n    label: 'Reporte ejecutivo',\n    question: 'Resume en español la decisión comercial que plantea el contrato. Indica compromisos principales, costo o beneficio calculable, riesgos prioritarios y qué puntos conviene negociar antes de firmar.',\n  },\n  abogado: {\n    label: 'Cláusulas para revisar con un abogado',\n    question: 'Enumera las cláusulas del contrato que merecen revisión por su redacción, alcance o asimetría. Para cada una, indica su referencia, un fragmento textual comprobable y la pregunta que conviene plantear al revisor.',\n  },\n  storytelling: {\n    label: 'Storytelling',\n    question: 'Explica el contrato con una escena breve y sencilla. Distingue lo que las partes prometen, lo que ocurre si se cumple y lo que queda abierto si algo sale mal. Identifica como ejemplos los escenarios hipotéticos.',\n  },\n};\nconst menu = [\n  'Hola, soy Contracter. ' + uploadHelp,\n  analysisNotice,\n  'Con un contrato activo, escribe una pregunta o pídeme que lo audite.',\n  '/pregunta o /consulta · pregunta sobre el contrato',\n  '/auditar · revisa cláusulas y propone cambios',\n  '/reporte ejecutivo, /reporte experto o /reporte abogado · cambia el enfoque de la respuesta',\n  '/storytelling · explica el contrato con un ejemplo',\n  '/fuentes · consulta documentos oficiales y busca fragmentos',\n  '/expediente · muestra el ID y el estado del caso activo',\n  '/revisar · consulta la revisión humana',\n  '/reset · limpia el caso activo para empezar de nuevo',\n].join('\\n');\n\nfunction toId(value) {\n  return /^[1-9][0-9]{0,17}$/.test(String(value ?? '')) ? String(value) : null;\n}\n\nfunction conversationAccess(update, config) {\n  const message = update?.message;\n  const chat = toId(message?.chat?.id);\n  const actor = toId(message?.from?.id);\n  if (!chat || !actor || message.chat.type !== 'private'\n    || !Number.isSafeInteger(message.message_id) || message.message_id < 1\n    || !Number.isSafeInteger(update.update_id) || update.update_id < 0) return null;\n  const allowed = [config, ...(config.allowed_chats || [])];\n  if (!allowed.some(entry => chat === toId(entry.owner_chat_id) && actor === toId(entry.owner_user_id))) return null;\n  return { chat_id: chat, message_id: message.message_id };\n}\n\nfunction eventId(sha256, chat, updateId, kind) {\n  const hash = sha256('contracter:telegram-v2:' + chat + ':' + updateId + ':' + kind);\n  return [hash.slice(0, 8), hash.slice(8, 12), '8' + hash.slice(13, 16),\n    '8' + hash.slice(17, 20), hash.slice(20, 32)].join('-');\n}\n\nfunction plainText(raw) {\n  if (typeof raw !== 'string' || /[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/.test(raw)) return null;\n  const document = raw.replace(/^\\uFEFF/, '').replace(/\\r\\n?/g, '\\n').trim();\n  return document && !document.startsWith('%PDF-')\n    && document.length <= maxDocumentChars && document.split('\\n').length <= 1500\n    && Buffer.byteLength(document, 'utf8') <= maxAttachmentBytes ? document : null;\n}\n\nfunction fileMetadata(file) {\n  if (typeof file?.file_name !== 'string' || !/\\.txt$/i.test(file.file_name)\n    || (file.mime_type !== undefined && !/^text\\/plain(?:;\\s*charset=utf-8)?$/i.test(file.mime_type))\n    || typeof file.file_id !== 'string' || !/^[A-Za-z0-9_-]{1,512}$/.test(file.file_id)\n    || !Number.isSafeInteger(file.file_size) || file.file_size < 1 || file.file_size > maxAttachmentBytes) return null;\n  return { file_id: file.file_id, file_size: file.file_size };\n}\n\nfunction sessionChange(command, state, text) {\n  return { ...command, action: 'save', text, body: {\n    operation: 'save_telegram_session', owner_chat_id: command.chat_id,\n    expected_revision: command.revision, message_id: command.message_id, state,\n  } };\n}\n\nfunction openDocument(command, document, caseId) {\n  const active = {\n    case_id: caseId, document, title: 'Contrato', context: {},\n    jurisdiction: { region: 'Federal', entity_code: null, municipality_code: null }, turns: [],\n  };\n  return sessionChange(command, { active, pending: null }, [\n    'Abrí el expediente ' + caseId + ' con el contrato que enviaste.',\n    '¿A qué parte representas y qué quieres revisar? Por ejemplo, “Soy comprador y quiero aclarar el pago”.',\n    'Pregunta lo que quieras revisar. Por ejemplo, “¿cuándo vence el pago?”. También puedes decir “audita el contrato”.',\n    analysisNotice,\n  ].join('\\n'));\n}\n\nfunction auditContext(text) {\n  const match = /^soy\\s+(?:(?:el|la)\\s+)?(comprador[ae]?|vendedor[ae]?|proveedor[ae]?|cliente|arrendador[ae]?|arrendatari[oa])(?:[ ,]+)(?:y\\s+)?(?:quiero|necesito)\\s+(.{1,470})$/iu.exec(text);\n  if (!match) return null;\n  const role = match[1].toLowerCase();\n  return { our_party: 'Parte que consulta', counterparty: 'Contraparte',\n    our_role: role, objectives: [match[2]], confirmed: true };\n}\n\nfunction auditJurisdiction(text) {\n  const match = /^regi[oó]n:\\s*([^\\n]{1,120})(?:\\nEntidad:\\s*(0[1-9]|[12][0-9]|3[0-2])(?:\\nMunicipio:\\s*(?!000)([0-9]{3}))?)?$/iu.exec(text);\n  if (!match) return null;\n  const region = match[1].trim();\n  if (!region || (!match[2] && !/^(federal|nacional)$/i.test(region)) || /TODO_|por confirmar|por definir/i.test(region)) return null;\n  return { region, entity_code: match[2] || null, municipality_code: match[3] || null };\n}\n\nfunction activeDescription(active) {\n  const status = {\n    AWAITING_HUMAN: 'Borrador V2 guardado para revisión',\n    HELD: 'Auditoría retenida',\n    CONTEXT_REQUIRED: 'Pendiente de aclaraciones para la auditoría',\n    NO_REWRITE_REQUIRED: 'Auditoría terminada con el texto original',\n  };\n  return 'Expediente activo ' + active.case_id + '\\n'\n    + (status[active.last_audit_status] || 'Contrato recibido y listo para consultar.');\n}\n\nfunction planTelegramConversation(update, access, session, sha256) {\n  if (session.last_message_id !== null && access.message_id <= session.last_message_id) return null;\n  const message = update.message;\n  const state = session.state || empty;\n  const { active, pending } = state;\n  const command = { ...access, revision: session.revision, state };\n  const reply = text => ({ ...access, action: 'reply', text });\n  const text = (typeof message.text === 'string' ? message.text : '').replace(/\\r\\n?/g, '\\n').trim();\n  const name = text.replace(/^\\/(\\w+)@ContracterExampleBot(?=\\s|$)/i, '/$1');\n  const idFor = kind => eventId(sha256, access.chat_id, update.update_id, kind);\n\n  if (/^(?:\\/reset|\\/restablecer|(?:restablecer|reiniciar|resetea) (?:el )?(?:expediente|chat|conversaci[oó]n))[.!]?$/i.test(name)) {\n    return sessionChange(command, null, 'Restablecí la conversación. Envía un nuevo contrato cuando quieras empezar. Las auditorías ya registradas se conservan.');\n  }\n  if (message.forward_origin || message.forward_date || message.media_group_id) {\n    return reply('Envía el contrato directamente en este chat como un solo archivo.');\n  }\n  const download = item => ({ ...command, action: 'download', ...item });\n  if (message.document !== undefined) {\n    const attachment = fileMetadata(message.document);\n    if (!attachment) return reply('Adjunta un .txt UTF-8 de hasta 36 000 bytes. ' + uploadHelp);\n    const item = { attachment, case_id: idFor('case') };\n    if (typeof message.caption === 'string' && /^contrato(?: de prueba| ficticio)?[.!]?$/i.test(message.caption.trim())) return download(item);\n    return sessionChange(command, { active, pending: item },\n      'Recibí el adjunto. Escribe «Confirmar» para abrir el expediente.\\n\\n' + analysisNotice);\n  }\n\n  const pasted = /^contrato(?: de prueba| ficticio)?\\s*:\\s*\\n([\\s\\S]+)$/i.exec(text);\n  if (pasted) {\n    const document = plainText(pasted[1]);\n    return document ? openDocument(command, document, idFor('case'))\n      : reply('El texto debe ser legible y tener hasta 12 000 caracteres. También puedes enviarlo como .txt.');\n  }\n  if (pending && /^(?:confirmar|confirmo|(?:s[ií][, ]+)?(?:us[eé] datos inventados|es ficticio)|confirmo que es ficticio)[.!]?$/i.test(text)) return download(pending);\n  if (/^(?:\\/(?:help|start)|ayuda|men[uú]|(?:hola|buen[oa]s? (?:d[ií]as|tardes|noches)))[!.?]?$/i.test(name)) {\n    return reply(active ? 'Hola. Seguimos con el expediente ' + active.case_id + '. Puedes hacerme una pregunta sobre el contrato.\\n\\n' + menu : menu);\n  }\n  if (/^\\/(?:demo|evaluar|estado)(?:\\s|$)/i.test(name)) {\n    const providerNote = /\\bopenai\\b/i.test(name) ? 'OpenAI puede consumir créditos.\\n' : '';\n    return reply(providerNote + (active ? activeDescription(active) + '\\n' : '') + uploadHelp + '\\n\\n' + analysisNotice);\n  }\n\n  const sourceCommand = /^\\/fuentes(?:\\s+([\\s\\S]+))?$/i.exec(name);\n  if (sourceCommand) {\n    const query = sourceCommand[1]?.trim() || '';\n    if (!query) return reply([\n      'Documentos oficiales',\n      'Busca en el Código de Comercio con /fuentes compraventa.',\n      'Código de Comercio · https://www.diputados.gob.mx/LeyesBiblio/ref/ccom.htm',\n      'Código Civil Federal · https://www.diputados.gob.mx/LeyesBiblio/ref/ccf.htm',\n      'Convención de Viena sobre compraventa internacional · https://uncitral.un.org/es/texts/salegoods/conventions/sale_of_goods/cisg',\n    ].join('\\n'));\n    if (query.length < 2 || query.length > 300 || /[\\x00-\\x1F\\x7F-\\x9F]/.test(query)) {\n      return reply('Escribe un tema de una sola línea, por ejemplo /fuentes entrega.');\n    }\n    const jurisdiction = active?.jurisdiction || { region: 'Federal', entity_code: null, municipality_code: null };\n    const asOf = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Mexico_City' }).format(new Date());\n    return { ...access, action: 'lookup', body: {\n      operation: 'legal_documental_search', query, limit: 2,\n      jurisdiction: { ...jurisdiction, country: 'MX', as_of: asOf },\n    } };\n  }\n\n  const caseCommand = /^\\/(expediente|revisar)(?:\\s+(\\S+))?$/i.exec(name);\n  if (caseCommand && (!caseCommand[2] || active?.case_id === caseCommand[2].toLowerCase())) {\n    if (!active) return reply('Todavía no abrimos un expediente. ' + uploadHelp);\n    return reply(caseCommand[1].toLowerCase() === 'revisar'\n      ? activeDescription(active) + '\\nLa revisión formal requiere un expediente autorizado.'\n      : activeDescription(active));\n  }\n  if (caseCommand) {\n    if (!uuid.test(caseCommand[2])) return reply('Incluye un ID de expediente válido o usa /expediente para consultar el caso activo.');\n    if (caseCommand[1].toLowerCase() === 'revisar') return reply('La revisión formal requiere un expediente autorizado. Usa /expediente para consultar el estado del caso activo.');\n    return { ...access, action: 'lookup', body: { operation: 'get_case', audience: 'telegram',\n      case_id: caseCommand[2].toLowerCase(), owner_chat_id: access.chat_id } };\n  }\n\n  if (!active) {\n    const hint = pending ? 'Tengo un archivo esperando tu confirmación. Escribe «Confirmar» para abrirlo.' : uploadHelp;\n    return reply(hint);\n  }\n  if (/^(?:gracias|muchas gracias|listo|ok(?:ay)?|entendido)[!. ]*$/i.test(name)) {\n    return reply('Puedes seguir preguntando sobre el mismo contrato cuando quieras.');\n  }\n  const context = auditContext(text);\n  const clarification = /^aclaraci[oó]n:\\s*(.{1,500})$/iu.exec(text)?.[1];\n  const jurisdiction = auditJurisdiction(text);\n  if (/^regi[oó]n:/i.test(text) && !jurisdiction) {\n    return reply('Puedes escribir “Región: Federal”. Para un estado, escribe su nombre después de “Región:” y agrega “Entidad:” con su clave de dos dígitos en otra línea.');\n  }\n  if (context || clarification || jurisdiction) {\n    const changes = context ? { context } : clarification ? { clarification } : { jurisdiction };\n    return sessionChange(command, { ...state, active: { ...active, ...changes } },\n      'Guardé la información para este expediente. Escribe “audita el contrato” para usarla en la revisión.');\n  }\n\n  const full = /^(?:\\/auditar|(?:por favor[, ]+)?audita(?:r)?(?:\\s+(?:el|este)\\s+contrato)?)[.!]?$/i.test(name);\n  if (full && active.last_audit_status === 'AWAITING_HUMAN') return reply(activeDescription(active));\n  if (full && active.context.confirmed !== true) {\n    return reply('Para auditarlo, dime qué parte representas y qué quieres verificar. Por ejemplo: «Soy comprador y quiero precisar los plazos de pago».');\n  }\n  const explicitQuestion = /^\\/(?:pregunta|consulta)(?:\\s+([\\s\\S]+))?$/i.exec(name);\n  const reportCommand = /^\\/reporte(?:\\s+(\\S+))?$/i.exec(name);\n  const reportKey = reportCommand ? (reportCommand[1] || 'ejecutivo').toLowerCase()\n    : /^\\/storytelling$/i.test(name) ? 'storytelling' : /^\\/cl[aá]usulas$/i.test(name) ? 'abogado' : '';\n  const report = reportKey && Object.hasOwn(reportRequests, reportKey) ? reportRequests[reportKey] : null;\n  if (reportCommand && !report) return reply('Elige /reporte ejecutivo, /reporte experto o /reporte abogado.');\n  if (name.startsWith('/') && !explicitQuestion && !full && !report) {\n    return reply('Puedes escribirme tu pregunta en lenguaje natural o usar /help para ver las opciones.');\n  }\n  let question = report ? report.question : explicitQuestion ? explicitQuestion[1] || '' : text;\n  const mentionedId = /^([a-f0-9-]{36})(?:\\s+|$)/i.exec(question);\n  if (explicitQuestion && mentionedId && uuid.test(mentionedId[1])) {\n    if (mentionedId[1].toLowerCase() !== active.case_id) {\n      return reply('Este chat está usando el expediente ' + active.case_id + '. Usa /reset para abrir otro contrato.');\n    }\n    question = question.slice(mentionedId[0].length).trim();\n  }\n  if ((!full && (!question || question.length > maxQuestionChars)) || (!text && !explicitQuestion)) {\n    return reply('Escríbeme una pregunta sobre el contrato en un mensaje de hasta 600 caracteres.');\n  }\n\n  const confirmedContext = active.context.confirmed === true ? active.context : {\n    our_party: 'Parte que consulta', counterparty: 'Contraparte', our_role: 'consulta neutral',\n    objectives: ['Entender el texto del contrato que envió el usuario.'], confirmed: true,\n  };\n  return { ...command, action: 'gemini', ...(report ? { report_label: report.label } : {}), input: {\n    workflow: full ? 'full' : 'qa', synthetic: true,\n    run_id: idFor('run'), case_id: active.case_id, owner_chat_id: access.chat_id,\n    document: active.document, title: active.title, context: confirmedContext, jurisdiction: active.jurisdiction,\n    ...(active.clarification ? { clarification: active.clarification } : {}),\n    ...(full ? {} : { question, conversation: active.turns }),\n  } };\n}\n\nfunction finishTelegramConversationDownload(command, bytes) {\n  const reject = () => ({ action: 'reply', chat_id: command.chat_id,\n    text: 'No pude leer el adjunto como .txt UTF-8. Verifica el archivo y envíalo de nuevo.' });\n  if (!Buffer.isBuffer(bytes) || bytes.length !== command.attachment.file_size\n    || bytes.length > maxAttachmentBytes) return reject();\n  const raw = bytes.toString('utf8');\n  if (!Buffer.from(raw, 'utf8').equals(bytes)) return reject();\n  const document = plainText(raw);\n  return document ? openDocument(command, document, command.case_id) : reject();\n}\n\nfunction finishTelegramConversationAudit(command, result, allowedQuestions) {\n  const { active } = command.state;\n  const qa = command.input.workflow === 'qa';\n  const answer = typeof result.answer === 'string'\n    ? result.answer.replace(/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/g, '').trim() : '';\n  let state = command.state;\n  let text;\n  if (qa && result.status === 'QA_READY' && result.persisted === true && result.source_case_id === active.case_id && answer) {\n    const turn = { question: command.input.question, answer: answer.slice(0, 1200) };\n    state = { ...state, active: { ...active, turns: [...active.turns, turn].slice(-3) } };\n    text = (command.report_label ? command.report_label + '\\n\\n' : '') + answer.slice(0, 3500) + '\\n\\n' + analysisNotice;\n  } else if (!qa && result.status === 'AWAITING_HUMAN' && result.case_id === active.case_id && result.persisted === true) {\n    text = 'Guardé el borrador V2 del expediente ' + active.case_id + '. Puedes seguir preguntando sobre el contrato o consultar /revisar.\\n\\n' + analysisNotice;\n  } else if (result.status === 'CONTEXT_REQUIRED') {\n    const questions = Array.isArray(result.questions) ? [...new Set(result.questions)]\n      .filter(question => allowedQuestions.includes(question)).slice(0, 5) : [];\n    text = ['Necesito aclarar algunos datos del expediente.', ...questions,\n      'Escríbeme «Aclaración:» seguida de los datos y vuelve a pedirme que lo audite.'].join('\\n');\n  } else if (result.status === 'NO_REWRITE_REQUIRED') {\n    text = 'La auditoría recomienda conservar el texto actual. Puedes seguir preguntando sobre sus cláusulas.\\n\\n' + analysisNotice;\n  } else if (result.status === 'HELD') {\n    const reason = result.reason || '';\n    if (reason === 'AFTON_TEST_CANARY') {\n      text = 'Afton detuvo el documento al encontrar el marcador del ejercicio de seguridad. El expediente sigue disponible para reemplazar el archivo con /reset.';\n    } else if (reason === 'PROVIDER_QUOTA_EXHAUSTED' || reason === 'PROVIDER_CAPACITY_UNAVAILABLE') {\n      text = 'Gemini Free está temporalmente fuera de cuota o saturado. El expediente sigue activo y puedes reintentar más tarde.';\n    } else if (/LEGAL|SOURCE|GROUNDING/.test(reason)) {\n      text = 'La auditoría quedó retenida porque hacen falta fuentes jurídicas revisadas para este caso. Puedes seguir consultando qué dice el contrato.';\n    } else {\n      text = 'La revisión quedó retenida. Código ' + (/^[A-Z0-9_]{1,90}$/.test(reason) ? reason : 'CONTROL_PENDIENTE') + '.';\n    }\n  } else {\n    text = 'El servicio de auditoría no pudo completar la solicitud. El contrato sigue activo.';\n  }\n  if (!qa && ['AWAITING_HUMAN', 'HELD', 'CONTEXT_REQUIRED', 'NO_REWRITE_REQUIRED'].includes(result.status)\n    && (result.status !== 'AWAITING_HUMAN' || (result.case_id === active.case_id && result.persisted === true))) {\n    state = { ...state, active: { ...active, last_audit_status: result.status } };\n  }\n  return sessionChange(command, state, text);\n}\n\nreturn { finishTelegramConversationDownload };\n})();\n\nconst command = $(\"¿Descargar adjunto de prueba?\").itemMatching(0).json;\nlet bytes;\ntry {\n  if ($input.first().binary?.data) bytes = await this.helpers.getBinaryDataBuffer(0, 'data');\n} catch { /* Do not return Telegram's download error, which can contain file metadata. */ }\nreturn [{json:finishTelegramConversationDownload(command, bytes)}];\n"
+      }
+    },
+    {
+      "id": "d5d68c60-95ef-4119-a79b-a53570d8dd86",
+      "name": "¿Ejecutar Gemini Free?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ec15a019-855c-4e2b-ab41-892e315e82b5",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "gemini",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "3b11a91c-846a-402e-8be4-6e5df25587d1",
+      "name": "Preparar solicitud de agentes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        -260
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:$input.first().json.input}];"
+      }
+    },
+    {
+      "id": "6a89d0bd-5bb6-455b-a8a6-ca516a73554c",
+      "name": "Ejecutar motor V2",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1980,
+        -260
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TODO_GEMINI_V2_WORKFLOW_ID"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "8debb0dd-5d76-4df1-a67c-5a0bebe4737d",
+      "name": "Preparar respuesta del caso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        -260
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const { finishTelegramConversationAudit } = (() => {\nconst uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;\nconst maxDocumentChars = 12_000;\nconst maxAttachmentBytes = 36_000;\nconst maxQuestionChars = 600;\nconst empty = { active: null, pending: null };\nconst analysisNotice = 'Advertencia. Contracter está trabajando con Gemini Free. Puede cometer errores.';\nconst uploadHelp = 'Envía un .txt UTF-8 o pega el texto después de escribir “Contrato:” en una línea aparte.';\nconst reportRequests = {\n  experto: {\n    label: 'Reporte experto',\n    question: 'Resume las obligaciones, montos, plazos y dependencias del contrato. Para cada riesgo operativo, indica su cláusula, qué falta por aclarar y una acción para la parte que consulta.',\n  },\n  ejecutivo: {\n    label: 'Reporte ejecutivo',\n    question: 'Resume en español la decisión comercial que plantea el contrato. Indica compromisos principales, costo o beneficio calculable, riesgos prioritarios y qué puntos conviene negociar antes de firmar.',\n  },\n  abogado: {\n    label: 'Cláusulas para revisar con un abogado',\n    question: 'Enumera las cláusulas del contrato que merecen revisión por su redacción, alcance o asimetría. Para cada una, indica su referencia, un fragmento textual comprobable y la pregunta que conviene plantear al revisor.',\n  },\n  storytelling: {\n    label: 'Storytelling',\n    question: 'Explica el contrato con una escena breve y sencilla. Distingue lo que las partes prometen, lo que ocurre si se cumple y lo que queda abierto si algo sale mal. Identifica como ejemplos los escenarios hipotéticos.',\n  },\n};\nconst menu = [\n  'Hola, soy Contracter. ' + uploadHelp,\n  analysisNotice,\n  'Con un contrato activo, escribe una pregunta o pídeme que lo audite.',\n  '/pregunta o /consulta · pregunta sobre el contrato',\n  '/auditar · revisa cláusulas y propone cambios',\n  '/reporte ejecutivo, /reporte experto o /reporte abogado · cambia el enfoque de la respuesta',\n  '/storytelling · explica el contrato con un ejemplo',\n  '/fuentes · consulta documentos oficiales y busca fragmentos',\n  '/expediente · muestra el ID y el estado del caso activo',\n  '/revisar · consulta la revisión humana',\n  '/reset · limpia el caso activo para empezar de nuevo',\n].join('\\n');\n\nfunction toId(value) {\n  return /^[1-9][0-9]{0,17}$/.test(String(value ?? '')) ? String(value) : null;\n}\n\nfunction conversationAccess(update, config) {\n  const message = update?.message;\n  const chat = toId(message?.chat?.id);\n  const actor = toId(message?.from?.id);\n  if (!chat || !actor || message.chat.type !== 'private'\n    || !Number.isSafeInteger(message.message_id) || message.message_id < 1\n    || !Number.isSafeInteger(update.update_id) || update.update_id < 0) return null;\n  const allowed = [config, ...(config.allowed_chats || [])];\n  if (!allowed.some(entry => chat === toId(entry.owner_chat_id) && actor === toId(entry.owner_user_id))) return null;\n  return { chat_id: chat, message_id: message.message_id };\n}\n\nfunction eventId(sha256, chat, updateId, kind) {\n  const hash = sha256('contracter:telegram-v2:' + chat + ':' + updateId + ':' + kind);\n  return [hash.slice(0, 8), hash.slice(8, 12), '8' + hash.slice(13, 16),\n    '8' + hash.slice(17, 20), hash.slice(20, 32)].join('-');\n}\n\nfunction plainText(raw) {\n  if (typeof raw !== 'string' || /[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/.test(raw)) return null;\n  const document = raw.replace(/^\\uFEFF/, '').replace(/\\r\\n?/g, '\\n').trim();\n  return document && !document.startsWith('%PDF-')\n    && document.length <= maxDocumentChars && document.split('\\n').length <= 1500\n    && Buffer.byteLength(document, 'utf8') <= maxAttachmentBytes ? document : null;\n}\n\nfunction fileMetadata(file) {\n  if (typeof file?.file_name !== 'string' || !/\\.txt$/i.test(file.file_name)\n    || (file.mime_type !== undefined && !/^text\\/plain(?:;\\s*charset=utf-8)?$/i.test(file.mime_type))\n    || typeof file.file_id !== 'string' || !/^[A-Za-z0-9_-]{1,512}$/.test(file.file_id)\n    || !Number.isSafeInteger(file.file_size) || file.file_size < 1 || file.file_size > maxAttachmentBytes) return null;\n  return { file_id: file.file_id, file_size: file.file_size };\n}\n\nfunction sessionChange(command, state, text) {\n  return { ...command, action: 'save', text, body: {\n    operation: 'save_telegram_session', owner_chat_id: command.chat_id,\n    expected_revision: command.revision, message_id: command.message_id, state,\n  } };\n}\n\nfunction openDocument(command, document, caseId) {\n  const active = {\n    case_id: caseId, document, title: 'Contrato', context: {},\n    jurisdiction: { region: 'Federal', entity_code: null, municipality_code: null }, turns: [],\n  };\n  return sessionChange(command, { active, pending: null }, [\n    'Abrí el expediente ' + caseId + ' con el contrato que enviaste.',\n    '¿A qué parte representas y qué quieres revisar? Por ejemplo, “Soy comprador y quiero aclarar el pago”.',\n    'Pregunta lo que quieras revisar. Por ejemplo, “¿cuándo vence el pago?”. También puedes decir “audita el contrato”.',\n    analysisNotice,\n  ].join('\\n'));\n}\n\nfunction auditContext(text) {\n  const match = /^soy\\s+(?:(?:el|la)\\s+)?(comprador[ae]?|vendedor[ae]?|proveedor[ae]?|cliente|arrendador[ae]?|arrendatari[oa])(?:[ ,]+)(?:y\\s+)?(?:quiero|necesito)\\s+(.{1,470})$/iu.exec(text);\n  if (!match) return null;\n  const role = match[1].toLowerCase();\n  return { our_party: 'Parte que consulta', counterparty: 'Contraparte',\n    our_role: role, objectives: [match[2]], confirmed: true };\n}\n\nfunction auditJurisdiction(text) {\n  const match = /^regi[oó]n:\\s*([^\\n]{1,120})(?:\\nEntidad:\\s*(0[1-9]|[12][0-9]|3[0-2])(?:\\nMunicipio:\\s*(?!000)([0-9]{3}))?)?$/iu.exec(text);\n  if (!match) return null;\n  const region = match[1].trim();\n  if (!region || (!match[2] && !/^(federal|nacional)$/i.test(region)) || /TODO_|por confirmar|por definir/i.test(region)) return null;\n  return { region, entity_code: match[2] || null, municipality_code: match[3] || null };\n}\n\nfunction activeDescription(active) {\n  const status = {\n    AWAITING_HUMAN: 'Borrador V2 guardado para revisión',\n    HELD: 'Auditoría retenida',\n    CONTEXT_REQUIRED: 'Pendiente de aclaraciones para la auditoría',\n    NO_REWRITE_REQUIRED: 'Auditoría terminada con el texto original',\n  };\n  return 'Expediente activo ' + active.case_id + '\\n'\n    + (status[active.last_audit_status] || 'Contrato recibido y listo para consultar.');\n}\n\nfunction planTelegramConversation(update, access, session, sha256) {\n  if (session.last_message_id !== null && access.message_id <= session.last_message_id) return null;\n  const message = update.message;\n  const state = session.state || empty;\n  const { active, pending } = state;\n  const command = { ...access, revision: session.revision, state };\n  const reply = text => ({ ...access, action: 'reply', text });\n  const text = (typeof message.text === 'string' ? message.text : '').replace(/\\r\\n?/g, '\\n').trim();\n  const name = text.replace(/^\\/(\\w+)@ContracterExampleBot(?=\\s|$)/i, '/$1');\n  const idFor = kind => eventId(sha256, access.chat_id, update.update_id, kind);\n\n  if (/^(?:\\/reset|\\/restablecer|(?:restablecer|reiniciar|resetea) (?:el )?(?:expediente|chat|conversaci[oó]n))[.!]?$/i.test(name)) {\n    return sessionChange(command, null, 'Restablecí la conversación. Envía un nuevo contrato cuando quieras empezar. Las auditorías ya registradas se conservan.');\n  }\n  if (message.forward_origin || message.forward_date || message.media_group_id) {\n    return reply('Envía el contrato directamente en este chat como un solo archivo.');\n  }\n  const download = item => ({ ...command, action: 'download', ...item });\n  if (message.document !== undefined) {\n    const attachment = fileMetadata(message.document);\n    if (!attachment) return reply('Adjunta un .txt UTF-8 de hasta 36 000 bytes. ' + uploadHelp);\n    const item = { attachment, case_id: idFor('case') };\n    if (typeof message.caption === 'string' && /^contrato(?: de prueba| ficticio)?[.!]?$/i.test(message.caption.trim())) return download(item);\n    return sessionChange(command, { active, pending: item },\n      'Recibí el adjunto. Escribe «Confirmar» para abrir el expediente.\\n\\n' + analysisNotice);\n  }\n\n  const pasted = /^contrato(?: de prueba| ficticio)?\\s*:\\s*\\n([\\s\\S]+)$/i.exec(text);\n  if (pasted) {\n    const document = plainText(pasted[1]);\n    return document ? openDocument(command, document, idFor('case'))\n      : reply('El texto debe ser legible y tener hasta 12 000 caracteres. También puedes enviarlo como .txt.');\n  }\n  if (pending && /^(?:confirmar|confirmo|(?:s[ií][, ]+)?(?:us[eé] datos inventados|es ficticio)|confirmo que es ficticio)[.!]?$/i.test(text)) return download(pending);\n  if (/^(?:\\/(?:help|start)|ayuda|men[uú]|(?:hola|buen[oa]s? (?:d[ií]as|tardes|noches)))[!.?]?$/i.test(name)) {\n    return reply(active ? 'Hola. Seguimos con el expediente ' + active.case_id + '. Puedes hacerme una pregunta sobre el contrato.\\n\\n' + menu : menu);\n  }\n  if (/^\\/(?:demo|evaluar|estado)(?:\\s|$)/i.test(name)) {\n    const providerNote = /\\bopenai\\b/i.test(name) ? 'OpenAI puede consumir créditos.\\n' : '';\n    return reply(providerNote + (active ? activeDescription(active) + '\\n' : '') + uploadHelp + '\\n\\n' + analysisNotice);\n  }\n\n  const sourceCommand = /^\\/fuentes(?:\\s+([\\s\\S]+))?$/i.exec(name);\n  if (sourceCommand) {\n    const query = sourceCommand[1]?.trim() || '';\n    if (!query) return reply([\n      'Documentos oficiales',\n      'Busca en el Código de Comercio con /fuentes compraventa.',\n      'Código de Comercio · https://www.diputados.gob.mx/LeyesBiblio/ref/ccom.htm',\n      'Código Civil Federal · https://www.diputados.gob.mx/LeyesBiblio/ref/ccf.htm',\n      'Convención de Viena sobre compraventa internacional · https://uncitral.un.org/es/texts/salegoods/conventions/sale_of_goods/cisg',\n    ].join('\\n'));\n    if (query.length < 2 || query.length > 300 || /[\\x00-\\x1F\\x7F-\\x9F]/.test(query)) {\n      return reply('Escribe un tema de una sola línea, por ejemplo /fuentes entrega.');\n    }\n    const jurisdiction = active?.jurisdiction || { region: 'Federal', entity_code: null, municipality_code: null };\n    const asOf = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Mexico_City' }).format(new Date());\n    return { ...access, action: 'lookup', body: {\n      operation: 'legal_documental_search', query, limit: 2,\n      jurisdiction: { ...jurisdiction, country: 'MX', as_of: asOf },\n    } };\n  }\n\n  const caseCommand = /^\\/(expediente|revisar)(?:\\s+(\\S+))?$/i.exec(name);\n  if (caseCommand && (!caseCommand[2] || active?.case_id === caseCommand[2].toLowerCase())) {\n    if (!active) return reply('Todavía no abrimos un expediente. ' + uploadHelp);\n    return reply(caseCommand[1].toLowerCase() === 'revisar'\n      ? activeDescription(active) + '\\nLa revisión formal requiere un expediente autorizado.'\n      : activeDescription(active));\n  }\n  if (caseCommand) {\n    if (!uuid.test(caseCommand[2])) return reply('Incluye un ID de expediente válido o usa /expediente para consultar el caso activo.');\n    if (caseCommand[1].toLowerCase() === 'revisar') return reply('La revisión formal requiere un expediente autorizado. Usa /expediente para consultar el estado del caso activo.');\n    return { ...access, action: 'lookup', body: { operation: 'get_case', audience: 'telegram',\n      case_id: caseCommand[2].toLowerCase(), owner_chat_id: access.chat_id } };\n  }\n\n  if (!active) {\n    const hint = pending ? 'Tengo un archivo esperando tu confirmación. Escribe «Confirmar» para abrirlo.' : uploadHelp;\n    return reply(hint);\n  }\n  if (/^(?:gracias|muchas gracias|listo|ok(?:ay)?|entendido)[!. ]*$/i.test(name)) {\n    return reply('Puedes seguir preguntando sobre el mismo contrato cuando quieras.');\n  }\n  const context = auditContext(text);\n  const clarification = /^aclaraci[oó]n:\\s*(.{1,500})$/iu.exec(text)?.[1];\n  const jurisdiction = auditJurisdiction(text);\n  if (/^regi[oó]n:/i.test(text) && !jurisdiction) {\n    return reply('Puedes escribir “Región: Federal”. Para un estado, escribe su nombre después de “Región:” y agrega “Entidad:” con su clave de dos dígitos en otra línea.');\n  }\n  if (context || clarification || jurisdiction) {\n    const changes = context ? { context } : clarification ? { clarification } : { jurisdiction };\n    return sessionChange(command, { ...state, active: { ...active, ...changes } },\n      'Guardé la información para este expediente. Escribe “audita el contrato” para usarla en la revisión.');\n  }\n\n  const full = /^(?:\\/auditar|(?:por favor[, ]+)?audita(?:r)?(?:\\s+(?:el|este)\\s+contrato)?)[.!]?$/i.test(name);\n  if (full && active.last_audit_status === 'AWAITING_HUMAN') return reply(activeDescription(active));\n  if (full && active.context.confirmed !== true) {\n    return reply('Para auditarlo, dime qué parte representas y qué quieres verificar. Por ejemplo: «Soy comprador y quiero precisar los plazos de pago».');\n  }\n  const explicitQuestion = /^\\/(?:pregunta|consulta)(?:\\s+([\\s\\S]+))?$/i.exec(name);\n  const reportCommand = /^\\/reporte(?:\\s+(\\S+))?$/i.exec(name);\n  const reportKey = reportCommand ? (reportCommand[1] || 'ejecutivo').toLowerCase()\n    : /^\\/storytelling$/i.test(name) ? 'storytelling' : /^\\/cl[aá]usulas$/i.test(name) ? 'abogado' : '';\n  const report = reportKey && Object.hasOwn(reportRequests, reportKey) ? reportRequests[reportKey] : null;\n  if (reportCommand && !report) return reply('Elige /reporte ejecutivo, /reporte experto o /reporte abogado.');\n  if (name.startsWith('/') && !explicitQuestion && !full && !report) {\n    return reply('Puedes escribirme tu pregunta en lenguaje natural o usar /help para ver las opciones.');\n  }\n  let question = report ? report.question : explicitQuestion ? explicitQuestion[1] || '' : text;\n  const mentionedId = /^([a-f0-9-]{36})(?:\\s+|$)/i.exec(question);\n  if (explicitQuestion && mentionedId && uuid.test(mentionedId[1])) {\n    if (mentionedId[1].toLowerCase() !== active.case_id) {\n      return reply('Este chat está usando el expediente ' + active.case_id + '. Usa /reset para abrir otro contrato.');\n    }\n    question = question.slice(mentionedId[0].length).trim();\n  }\n  if ((!full && (!question || question.length > maxQuestionChars)) || (!text && !explicitQuestion)) {\n    return reply('Escríbeme una pregunta sobre el contrato en un mensaje de hasta 600 caracteres.');\n  }\n\n  const confirmedContext = active.context.confirmed === true ? active.context : {\n    our_party: 'Parte que consulta', counterparty: 'Contraparte', our_role: 'consulta neutral',\n    objectives: ['Entender el texto del contrato que envió el usuario.'], confirmed: true,\n  };\n  return { ...command, action: 'gemini', ...(report ? { report_label: report.label } : {}), input: {\n    workflow: full ? 'full' : 'qa', synthetic: true,\n    run_id: idFor('run'), case_id: active.case_id, owner_chat_id: access.chat_id,\n    document: active.document, title: active.title, context: confirmedContext, jurisdiction: active.jurisdiction,\n    ...(active.clarification ? { clarification: active.clarification } : {}),\n    ...(full ? {} : { question, conversation: active.turns }),\n  } };\n}\n\nfunction finishTelegramConversationDownload(command, bytes) {\n  const reject = () => ({ action: 'reply', chat_id: command.chat_id,\n    text: 'No pude leer el adjunto como .txt UTF-8. Verifica el archivo y envíalo de nuevo.' });\n  if (!Buffer.isBuffer(bytes) || bytes.length !== command.attachment.file_size\n    || bytes.length > maxAttachmentBytes) return reject();\n  const raw = bytes.toString('utf8');\n  if (!Buffer.from(raw, 'utf8').equals(bytes)) return reject();\n  const document = plainText(raw);\n  return document ? openDocument(command, document, command.case_id) : reject();\n}\n\nfunction finishTelegramConversationAudit(command, result, allowedQuestions) {\n  const { active } = command.state;\n  const qa = command.input.workflow === 'qa';\n  const answer = typeof result.answer === 'string'\n    ? result.answer.replace(/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x9F]/g, '').trim() : '';\n  let state = command.state;\n  let text;\n  if (qa && result.status === 'QA_READY' && result.persisted === true && result.source_case_id === active.case_id && answer) {\n    const turn = { question: command.input.question, answer: answer.slice(0, 1200) };\n    state = { ...state, active: { ...active, turns: [...active.turns, turn].slice(-3) } };\n    text = (command.report_label ? command.report_label + '\\n\\n' : '') + answer.slice(0, 3500) + '\\n\\n' + analysisNotice;\n  } else if (!qa && result.status === 'AWAITING_HUMAN' && result.case_id === active.case_id && result.persisted === true) {\n    text = 'Guardé el borrador V2 del expediente ' + active.case_id + '. Puedes seguir preguntando sobre el contrato o consultar /revisar.\\n\\n' + analysisNotice;\n  } else if (result.status === 'CONTEXT_REQUIRED') {\n    const questions = Array.isArray(result.questions) ? [...new Set(result.questions)]\n      .filter(question => allowedQuestions.includes(question)).slice(0, 5) : [];\n    text = ['Necesito aclarar algunos datos del expediente.', ...questions,\n      'Escríbeme «Aclaración:» seguida de los datos y vuelve a pedirme que lo audite.'].join('\\n');\n  } else if (result.status === 'NO_REWRITE_REQUIRED') {\n    text = 'La auditoría recomienda conservar el texto actual. Puedes seguir preguntando sobre sus cláusulas.\\n\\n' + analysisNotice;\n  } else if (result.status === 'HELD') {\n    const reason = result.reason || '';\n    if (reason === 'AFTON_TEST_CANARY') {\n      text = 'Afton detuvo el documento al encontrar el marcador del ejercicio de seguridad. El expediente sigue disponible para reemplazar el archivo con /reset.';\n    } else if (reason === 'PROVIDER_QUOTA_EXHAUSTED' || reason === 'PROVIDER_CAPACITY_UNAVAILABLE') {\n      text = 'Gemini Free está temporalmente fuera de cuota o saturado. El expediente sigue activo y puedes reintentar más tarde.';\n    } else if (/LEGAL|SOURCE|GROUNDING/.test(reason)) {\n      text = 'La auditoría quedó retenida porque hacen falta fuentes jurídicas revisadas para este caso. Puedes seguir consultando qué dice el contrato.';\n    } else {\n      text = 'La revisión quedó retenida. Código ' + (/^[A-Z0-9_]{1,90}$/.test(reason) ? reason : 'CONTROL_PENDIENTE') + '.';\n    }\n  } else {\n    text = 'El servicio de auditoría no pudo completar la solicitud. El contrato sigue activo.';\n  }\n  if (!qa && ['AWAITING_HUMAN', 'HELD', 'CONTEXT_REQUIRED', 'NO_REWRITE_REQUIRED'].includes(result.status)\n    && (result.status !== 'AWAITING_HUMAN' || (result.case_id === active.case_id && result.persisted === true))) {\n    state = { ...state, active: { ...active, last_audit_status: result.status } };\n  }\n  return sessionChange(command, state, text);\n}\n\nreturn { finishTelegramConversationAudit };\n})();\n\nconst command = $(\"¿Ejecutar Gemini Free?\").itemMatching(0).json;\nconst result = $input.first().json;\nreturn [{json:finishTelegramConversationAudit(command, result, [\"¿A quién representas, cuál es tu papel, quién es la contraparte y qué buscas proteger?\",\"¿Qué jurisdicción mexicana y qué fecha de referencia corresponden al contrato?\",\"¿Puedes resumir la aclaración en una línea de hasta 500 caracteres?\",\"¿Qué condición es indispensable y qué condiciones se pueden negociar?\",\"¿Qué monto, moneda o forma de pago debe quedar pactada?\",\"¿Qué fecha o plazo debe aplicarse?\",\"¿Qué bien, servicio o entregable debe incluirse?\",\"¿Cómo se confirmará que el bien o servicio fue recibido y aceptado?\",\"¿Qué debe ocurrir si alguna parte incumple o decide terminar el contrato?\",\"¿Qué responsabilidad, garantía o límite quieres negociar?\",\"¿Qué información debe mantenerse confidencial y durante cuánto tiempo?\",\"¿Cómo se resolverán las controversias?\"])}];\n"
+      }
+    },
+    {
+      "id": "85e15e38-ff00-4590-8fcb-c4c026d8e812",
+      "name": "¿Guardar sesión?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2420,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a629538b-e6ed-423f-8e34-6aff89d67689",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "save",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "77de438a-1fa5-446a-a4f9-53226c349e69",
+      "name": "Guardar sesión privada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        -220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://abcdefghijklmnopqrst.supabase.co/functions/v1/contracter-store",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 35000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Contracter · Lectura Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "9f87782d-eb79-47d8-9756-4fd63d61909f",
+      "name": "Confirmar respuesta vigente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        -220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst command = $(\"¿Guardar sesión?\").itemMatching(0).json;\nconst response = $input.first().json;\nif (response.statusCode === 409 && command.input) return [];\nconst text = response.statusCode === 200 ? command.text\n  : response.statusCode === 409 ? 'Otro mensaje cambió el expediente. Envía tu mensaje otra vez para aplicarlo al caso actual.'\n    : 'No pude confirmar el cambio en la sesión. Intenta de nuevo en un momento.';\nreturn [{json:{chat_id:command.chat_id,text}}];\n"
+      }
+    },
+    {
+      "id": "4fa9faa9-e08e-40e8-827e-f492bf4b4bbe",
+      "name": "¿Consultar expediente por ID?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2640,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "376cbd40-670d-4a78-a7ee-55823738f148",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "lookup",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "78096c03-941f-442d-bc9b-f98f01021e91",
+      "name": "Leer expediente de este chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2860,
+        220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://abcdefghijklmnopqrst.supabase.co/functions/v1/contracter-store",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 35000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Contracter · Lectura Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "987ca364-c433-4295-b1e5-5b8a5ea18468",
+      "name": "Redactar estado del expediente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst command = $(\"¿Consultar expediente por ID?\").itemMatching(0).json;\nconst response = $input.first().json;\nif (command.body.operation === 'legal_documental_search') {\n  const rows = response.statusCode === 200 && Array.isArray(response.body?.results) ? response.body.results : null;\n  const text = !rows ? 'No pude consultar las referencias documentales. Intenta de nuevo en un momento.'\n    : !rows.length ? 'No encontré ese término en los documentos incorporados. Prueba /fuentes compraventa o /fuentes para ver el catálogo.'\n    : ['Fragmentos del documento oficial. La aplicabilidad al contrato requiere revisión jurídica.',\n      ...rows.slice(0, 2).map(row => [\n        row.title + ' · ' + row.locator,\n        '«' + row.quote + '»',\n        row.review_status === 'approved' ? 'Revisión registrada en el corpus.' : 'Revisión jurídica pendiente.',\n        row.url,\n      ].join('\\n')),\n    ].join('\\n\\n');\n  return [{json:{chat_id:command.chat_id,text}}];\n}\nconst detail = response.statusCode === 200 && response.body?.case ? response.body : null;\nconst text = detail ? ['Expediente ' + detail.case.case_id, 'Estado ' + detail.status,\n    detail.case.reports?.watson?.summary || 'Consulta el expediente en el panel privado.'].join('\\n')\n  : 'No encontré un expediente con ese ID en este chat. Usa /expediente para ver el caso activo.';\nreturn [{json:{chat_id:command.chat_id,text:text.slice(0,3500)}}];\n"
+      }
+    },
+    {
+      "id": "20c23ceb-31b3-4662-8929-a207a7aa0f08",
+      "name": "Responder en Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3300,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "name": "Contracter · Telegram"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Entrada del bot privado": {
+      "main": [
+        [
+          {
+            "node": "Identificar chat autorizado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Identificar chat autorizado": {
+      "main": [
+        [
+          {
+            "node": "Leer sesión privada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer sesión privada": {
+      "main": [
+        [
+          {
+            "node": "Interpretar mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar mensaje": {
+      "main": [
+        [
+          {
+            "node": "¿Descargar adjunto de prueba?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Descargar adjunto de prueba?": {
+      "main": [
+        [
+          {
+            "node": "Descargar .txt privado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Ejecutar Gemini Free?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descargar .txt privado": {
+      "main": [
+        [
+          {
+            "node": "Abrir contrato recibido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Abrir contrato recibido": {
+      "main": [
+        [
+          {
+            "node": "¿Ejecutar Gemini Free?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Ejecutar Gemini Free?": {
+      "main": [
+        [
+          {
+            "node": "Preparar solicitud de agentes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Guardar sesión?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar solicitud de agentes": {
+      "main": [
+        [
+          {
+            "node": "Ejecutar motor V2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar motor V2": {
+      "main": [
+        [
+          {
+            "node": "Preparar respuesta del caso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar respuesta del caso": {
+      "main": [
+        [
+          {
+            "node": "¿Guardar sesión?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Guardar sesión?": {
+      "main": [
+        [
+          {
+            "node": "Guardar sesión privada",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Consultar expediente por ID?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar sesión privada": {
+      "main": [
+        [
+          {
+            "node": "Confirmar respuesta vigente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar respuesta vigente": {
+      "main": [
+        [
+          {
+            "node": "Responder en Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Consultar expediente por ID?": {
+      "main": [
+        [
+          {
+            "node": "Leer expediente de este chat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder en Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer expediente de este chat": {
+      "main": [
+        [
+          {
+            "node": "Redactar estado del expediente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redactar estado del expediente": {
+      "main": [
+        [
+          {
+            "node": "Responder en Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "timezone": "America/Mexico_City"
+  },
+  "active": false,
+  "pinData": {}
+}

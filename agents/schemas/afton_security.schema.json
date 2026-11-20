@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "afton_security.schema.json",
+  "title": "afton_security",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "const": "Afton"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "CLEAN",
+        "BLOCKED"
+      ]
+    },
+    "sanitized_text": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "agent",
+    "status",
+    "sanitized_text",
+    "findings",
+    "limitations"
+  ]
+}

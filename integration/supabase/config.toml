@@ -1,0 +1,4 @@
+# Supabase Edge JWT verification is intentionally replaced by scoped bearer
+# verification inside the function. An unconfigured token grants no access.
+[functions.contracter-store]
+verify_jwt = false
