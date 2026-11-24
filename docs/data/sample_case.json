@@ -231,7 +231,7 @@
       ]
     },
     "glenn": {
-      "explanation": "En este ejemplo ya se dice cuándo pagar, cuándo entregar y cómo cambiar el precio. Eso vuelve más claro el trato. Pero un acuerdo claro también puede tener problemas legales: el abogado todavía debe revisarlo. Aquí nadie ha firmado ni consultado leyes reales."
+      "explanation": "La V1 dejaba abiertos el pago y la entrega, y permitía cambiar el precio sin aviso. La V2 propone pagar por transferencia dentro de 30 días naturales desde la recepción de la factura aceptada y entregar el 15 de diciembre de 2026. Cualquier ajuste de precio requeriría una propuesta escrita y la aceptación expresa de ambas partes. Es una simulación y la V2 sigue pendiente de revisión humana."
     }
   },
   "costs": {

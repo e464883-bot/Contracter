@@ -49,6 +49,25 @@ El 13 de noviembre de 2026 se descargó el PDF del bucket privado de Contracter 
 
 El Código sólo entra en `legal_search_fts` para consultas jurídicas tras revisar la fuente, la versión, las fechas de efectos y sus referencias. El inventario de tratados permanece como evidencia descriptiva y se guarda separado del corpus de búsqueda jurídica.
 
+## Referencias cotejadas en la demostración
+
+El 23 de noviembre de 2026 se volvieron a descargar las compilaciones oficiales
+del Código de Comercio y del Código Civil Federal. Los PDF coincidieron byte
+por byte con las copias del piloto según SHA-256. Se localizó en la ficha de la
+ONU la adhesión de México a la Convención de Viena.
+
+| Referencia | Localizador y alcance documental |
+| --- | --- |
+| [Código de Comercio](https://www.diputados.gob.mx/LeyesBiblio/pdf/CCom.pdf#page=51) | P. 51, arts. 379, 380 y 383. Entrega sin plazo fijado, pago y reclamaciones en compraventas mercantiles. Última reforma observada en el PDF, DOF 14 de noviembre de 2025. |
+| [Código Civil Federal](https://www.diputados.gob.mx/LeyesBiblio/pdf/CCF.pdf#page=175) | P. 175, arts. 1796 y 1797. Formación y cumplimiento contractual. Última reforma cotejada con la [ficha de la Cámara](https://www.diputados.gob.mx/LeyesBiblio/ref/ccf.htm), DOF 14 de noviembre de 2025. |
+| [Convención de Viena](https://treaties.un.org/pages/ViewDetails.aspx?chapter=10&clang=_en&mtdsg_no=X-10&src=TREATY) | Colección de Tratados de la ONU, capítulo X.10, fila México. Adhesión registrada el 29 de diciembre de 1987. |
+
+El panel y la rama de voz de demostración muestran esas referencias.
+[`database/legal_documentary_evidence.sql`](../database/legal_documentary_evidence.sql)
+registra la coincidencia de los bytes en la versión del Código de Comercio de
+Supabase y añade entradas documentales del Código Civil Federal y la Convención.
+La auditoría formal usa su propio control de revisión jurídica y vigencia.
+
 ## Preparar la revisión jurídica
 
 Desde `contracter`, indica los números de página del PDF que correspondan al caso que se evaluará.
