@@ -56,6 +56,9 @@ export function loadConfig(env = process.env) {
   need(mode !== 'live' || (supabaseConfigured && token), 500, 'LIVE_NOT_CONFIGURED',
     'Live requiere Supabase y autenticación del gateway. No se utiliza SQLite como reemplazo.');
   const origins = (env.CONTRACTER_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean).map(normalizeOrigin);
+  const elevenBranch = env.ELEVENLABS_AGENT_BRANCH_ID || '';
+  need(!elevenBranch || /^[A-Za-z0-9_-]{1,120}$/.test(elevenBranch), 500,
+    'CONFIG_VOICE_BRANCH', 'ELEVENLABS_AGENT_BRANCH_ID debe ser un identificador de rama.');
   return Object.freeze({
     mode, port, host: '127.0.0.1', token, provider, supabaseUrl, supabaseSecret: filled(secret) ? secret : '',
     supabaseConfigured, storeReadToken, evaluationCaseId, allowedOrigins: new Set(origins),
@@ -63,6 +66,7 @@ export function loadConfig(env = process.env) {
     voiceEnabled: env.ELEVENLABS_ENABLED === 'true',
     elevenKey: filled(env.ELEVENLABS_API_KEY) ? env.ELEVENLABS_API_KEY : '',
     elevenAgent: filled(env.ELEVENLABS_AGENT_ID) ? env.ELEVENLABS_AGENT_ID : '',
+    elevenBranch,
     legalEnabled: env.CONTRACTER_LEGAL_RAG_ENABLED === 'true',
     configuredServices: {
       llm: Boolean(filled(env.LLM_BASE_URL) && filled(env.LLM_API_KEY) && filled(env.LLM_MODEL)),
@@ -84,6 +88,20 @@ function checkCase(data, expectedId, mode) {
   if (mode === 'mock') need(data.human_approval.status === 'PENDING' && data.fury?.released === false,
     502, 'MOCK_APPROVAL_INVALID', 'Una fixture mock no puede atribuirse firma humana.');
   return data;
+}
+
+function demoVoiceBrief(voiceCase, config) {
+  if (config.mode === 'mock') {
+    const explanation = voiceCase.reports?.glenn?.explanation;
+    if (typeof explanation !== 'string' || !explanation.trim()) return null;
+    return 'Caso simulado de Contracter. ' + explanation.replace(/\s+/g, ' ').trim().slice(0, 600);
+  }
+  if (config.evaluationCaseId !== voiceCase.case_id || voiceCase.evaluation !== true
+      || voiceCase.human_approval?.status !== 'PENDING' || voiceCase.fury?.released !== false) return null;
+  const changes = Array.isArray(voiceCase.changelog) ? voiceCase.changelog.length : 0;
+  return 'Expediente de evaluación de Contracter. ' + (changes === 1
+    ? 'La propuesta V2 registra un cambio.' : 'La propuesta V2 registra ' + changes + ' cambios.')
+    + ' La revisión humana sigue pendiente. La conversación sólo recibe este resumen de estado.';
 }
 
 export function openMockStore(path = ':memory:') {
@@ -261,25 +279,28 @@ function searchArgs(body) {
 export async function createGateway({ config = loadConfig(), fetchFn = fetch, store: suppliedStore,
   docsRoot = resolve(ROOT, 'docs'), catalogPath = resolve(ROOT, 'legal_sources/catalog.json') } = {}) {
   const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
+  const sample = config.mode === 'mock'
+    ? JSON.parse(await readFile(resolve(ROOT, 'docs/data/sample_case.json'), 'utf8')) : null;
   let store = suppliedStore;
   if (!store) {
     if (config.mode === 'mock') {
       if (config.sqlitePath !== ':memory:') await mkdir(dirname(resolve(config.sqlitePath)), { recursive: true });
       store = openMockStore(config.sqlitePath);
-      const sample = JSON.parse(await readFile(resolve(ROOT, 'docs/data/sample_case.json'), 'utf8'));
       store.seed(sample, catalog);
     } else store = config.storeReadToken
       ? createScopedReadAdapter(config, fetchFn) : createSupabaseAdapter(config, fetchFn);
   }
   const docs = await realpath(docsRoot);
   const voiceWindow = [];
+  const voiceConfigured = Boolean(config.voiceEnabled && config.token && config.elevenKey
+    && /^agent_[A-Za-z0-9_]+$/.test(config.elevenAgent));
   const configured = (value, extra = {}) => ({ status: value ? 'configured' : 'unconfigured',
     connectivity_verified: false, ...extra });
   const health = () => ({ status: 'degraded', mode: config.mode, checked_at: now(),
     services: {
       ...Object.fromEntries(Object.entries(config.configuredServices).map(([k,v]) => [k, configured(v)])),
       database: configured(true, { provider: config.provider, local_fixture_only: config.mode === 'mock' }),
-      elevenlabs: configured(config.voiceEnabled && config.elevenKey && config.elevenAgent, { enabled: config.voiceEnabled }),
+      elevenlabs: configured(voiceConfigured, { enabled: config.voiceEnabled }),
       legal_sources: { status: 'unconfigured', retrieval_configured: config.mode === 'live' && config.legalEnabled && Boolean(store.searchLegal),
         coverage: catalog.coverage?.status || 'unknown', catalogued_sources: catalog.sources?.length || 0,
         catalogued_entities: catalog.entities?.length || 0, last_sync_at: null, corpus_ingested: false,
@@ -345,11 +366,12 @@ export async function createGateway({ config = loadConfig(), fetchFn = fetch, st
         const body = await readBody(req);
         need(Object.keys(body).length === 1 && typeof body.case_id === 'string' && UUID.test(body.case_id),
           400, 'INVALID_BODY', 'Se requiere únicamente case_id válido. El agente de voz se fija en el servidor.');
-        need(config.mode === 'live' && config.voiceEnabled && config.elevenKey && /^agent_[A-Za-z0-9_]+$/.test(config.elevenAgent),
-          503, 'VOICE_UNCONFIGURED', 'ElevenLabs aún no está habilitado para este gateway.');
-        const voiceCase = await store.getCase(body.case_id.toLowerCase());
+        need(voiceConfigured, 503, 'VOICE_UNCONFIGURED', 'ElevenLabs aún no está habilitado para este gateway.');
+        const caseId = body.case_id.toLowerCase();
+        const voiceCase = sample ? (sample.case_id === caseId ? sample : null) : await store.getCase(caseId);
         need(voiceCase, 404, 'CASE_NOT_FOUND', 'Expediente no encontrado.');
-        checkCase(voiceCase, body.case_id.toLowerCase(), 'live');
+        checkCase(voiceCase, caseId, config.mode);
+        const voiceContext = demoVoiceBrief(voiceCase, config);
         const cutoff = Date.now() - 60000;
         while (voiceWindow.length && voiceWindow[0] < cutoff) voiceWindow.shift();
         need(voiceWindow.length < 3, 429, 'VOICE_RATE_LIMIT', 'Límite de sesiones de voz. Intente después de un minuto.');
@@ -357,6 +379,7 @@ export async function createGateway({ config = loadConfig(), fetchFn = fetch, st
         const endpoint = new URL('https://api.elevenlabs.io/v1/convai/conversation/get-signed-url');
         endpoint.searchParams.set('agent_id', config.elevenAgent);
         endpoint.searchParams.set('include_conversation_id','true');
+        if (config.elevenBranch) endpoint.searchParams.set('branch_id', config.elevenBranch);
         const response = await fetchFn(endpoint, { method:'GET', headers:{'xi-api-key':config.elevenKey},
           redirect:'error', signal:AbortSignal.timeout(10000) });
         const data = await boundedJson(response, { limit: 32768 });
@@ -368,8 +391,9 @@ export async function createGateway({ config = loadConfig(), fetchFn = fetch, st
           502, 'VOICE_RESPONSE', 'Destino de voz no permitido.');
         // Do not log or persist signed URLs: they authorize a private conversation.
         json(200, { signed_url: signed.href, agent_id:config.elevenAgent, case_id:voiceCase.case_id,
-          obtained_at:now(), single_use_requested:true, context_linked:false,
-          note:'Sesión de voz preparada. La herramienta autenticada de consulta de expedientes de Glenn aún no está enlazada.' }); return;
+          obtained_at:now(), single_use_requested:true, context_linked:voiceContext !== null,
+          note:voiceContext ? 'Sesión de voz preparada con un resumen de evaluación.' : 'Sesión de voz preparada sin acceso al expediente.',
+          ...(voiceContext ? { voice_context:voiceContext } : {}) }); return;
       }
       need(req.method === 'GET' || req.method === 'HEAD', 405, 'METHOD_NOT_ALLOWED', 'Método no permitido.');
       need(!url.search && !url.hash, 400, 'STATIC_QUERY_DENIED', 'Los archivos estáticos no aceptan parámetros.');

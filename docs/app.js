@@ -186,15 +186,17 @@ function renderServiceStatus(health) {
 }
 
 function canStartVoice() {
-  return currentCase?.mode === "live" && Boolean(currentBackendBase) && Boolean(apiSessionToken) &&
-    backendHealth?.mode === "live" && backendHealth?.services?.elevenlabs?.status === "configured";
+  return Boolean(currentCase && currentBackendBase && apiSessionToken) &&
+    backendHealth?.mode === currentCase.mode && backendHealth?.services?.elevenlabs?.status === "configured";
 }
 
 function updateVoiceAvailability() {
   $("voice-connect").disabled = !canStartVoice() || voiceStarting || Boolean(voiceSession);
   $("voice-disconnect").disabled = !voiceStarting && !voiceSession;
   if (!voiceSession && !voiceStarting) {
-    setText("voice-status", currentCase?.mode === "mock" ? "Desactivado en la demostración. No se carga el SDK ni se solicita el micrófono." : canStartVoice() ? "Disponible para iniciar. Al pulsar Conectar voz se solicitará una sesión autorizada y permiso de micrófono." : "Se requiere un expediente live recibido del backend, acceso temporal y ElevenLabs habilitado en el servidor.");
+    setText("voice-status", canStartVoice()
+      ? "Disponible para iniciar. Al pulsar Conectar voz se solicitará una sesión autorizada y permiso de micrófono."
+      : "Para habilitar la voz, carga el expediente desde un backend configurado con ElevenLabs y acceso privado.");
   }
 }
 
@@ -234,7 +236,11 @@ async function requestVoiceSession(base, caseId, token) {
     let payload;
     try { payload = JSON.parse(text); } catch { throw new Error("Respuesta de voz no válida."); }
     if (payload.case_id !== caseId) throw new Error("La sesión no corresponde al expediente solicitado.");
-    return { signedUrl: validateSignedVoiceUrl(payload.signed_url), contextLinked: payload.context_linked === true };
+    const context = payload.context_linked === true ? payload.voice_context : null;
+    if (payload.context_linked === true && (typeof context !== "string" || !context.trim() || context.length > 700)) {
+      throw new Error("El contexto de evaluación no es válido.");
+    }
+    return { signedUrl: validateSignedVoiceUrl(payload.signed_url), context };
   } finally { clearTimeout(timer); if (voiceController === controller) voiceController = null; }
 }
 
@@ -268,9 +274,10 @@ async function startVoice() {
     const session = await sdk.Conversation.startSession({
       signedUrl: voiceInfo.signedUrl,
       connectionType: "websocket",
+      ...(voiceInfo.context ? { dynamicVariables: { contracter_context: voiceInfo.context } } : {}),
       workletPaths: { rawAudioProcessor: new URL(VOICE_SDK.inputWorklet, document.baseURI).href, audioConcatProcessor: new URL(VOICE_SDK.outputWorklet, document.baseURI).href },
       libsampleratePath: new URL(VOICE_SDK.resampler, document.baseURI).href,
-      onConnect: () => { if (sequence === voiceSequence) { voiceConnected = true; setText("voice-status", "Conectado a ElevenLabs. Micrófono activo; pulsa Desconectar para finalizar." + (voiceInfo.contextLinked ? "" : " La consulta del expediente por Glenn todavía no está enlazada.")); } },
+      onConnect: () => { if (sequence === voiceSequence) { voiceConnected = true; setText("voice-status", "Conectado a ElevenLabs. Pulsa Desconectar para cerrar el micrófono." + (voiceInfo.context ? " La sesión incluye el resumen de evaluación." : " Esta sesión funciona sin acceso al expediente.")); } },
       onDisconnect: () => { if (sequence === voiceSequence) { voiceSession = null; voiceStarting = false; voiceConnected = false; updateVoiceAvailability(); setText("voice-status", "ElevenLabs cerró la sesión de voz."); } },
       onError: () => { if (sequence === voiceSequence) void stopVoice("La sesión de voz se interrumpió. Revisa permiso de micrófono, acceso y saldo en el proveedor."); }
     });

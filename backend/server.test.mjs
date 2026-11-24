@@ -26,6 +26,7 @@ test('configuración live falla cerrada sin Supabase/token y rechaza origen inse
   assert.throws(() => loadConfig({ CONTRACTER_MODE:'live' }), /Live requiere/);
   assert.throws(() => config({ CONTRACTER_ALLOWED_ORIGINS:'http://example.invalid' }), /HTTP sólo/);
   assert.throws(() => config({ CONTRACTER_DASHBOARD_TOKEN:'corto' }), /32 caracteres/);
+  assert.throws(() => config({ ELEVENLABS_AGENT_BRANCH_ID:'branch&id=other' }), { code:'CONFIG_VOICE_BRANCH' });
 });
 
 test('SQLite sólo conserva fixture identificada, 13 roles y eventos; seed idempotente', async () => {
@@ -246,11 +247,91 @@ test('voz valida acceso al caso, URL exacta, límites y no declara contexto enla
   const payload=await response.json(); assert.equal(response.status,200);
   assert.equal(payload.case_id,sample.case_id); assert.equal(payload.context_linked,false);
   assert.equal('api_key' in payload,false);
+  assert.equal('voice_context' in payload,false);
   await fetch(base+'/voice/session',post(base,{case_id:sample.case_id}));
   await fetch(base+'/voice/session',post(base,{case_id:sample.case_id}));
   assert.equal((await fetch(base+'/voice/session',post(base,{case_id:sample.case_id}))).status,429);
   assert.equal(calls,3);
   assert.equal((await fetch(base+'/data/sample_case.json')).status,404);
+});
+
+test('voz del caso de muestra requiere token, origen y habilitación y sólo comparte el resumen público', async t => {
+  const agentKey = 'TEST_SERVER_VOICE_KEY';
+  let calls = 0;
+  const {base} = await launch(t, {
+    config:config({ ELEVENLABS_ENABLED:'true', ELEVENLABS_AGENT_ID:'agent_TEST_ONLY',
+      ELEVENLABS_AGENT_BRANCH_ID:'branch_TEST_ONLY', ELEVENLABS_API_KEY:agentKey }),
+    fetchFn:async (url, options) => {
+      calls++;
+      assert.equal(url.origin, 'https://api.elevenlabs.io');
+      assert.equal(url.pathname, '/v1/convai/conversation/get-signed-url');
+      assert.deepEqual(Object.fromEntries(url.searchParams), {
+        agent_id:'agent_TEST_ONLY', include_conversation_id:'true', branch_id:'branch_TEST_ONLY',
+      });
+      assert.equal(options.headers['xi-api-key'], agentKey);
+      assert.equal(options.body, undefined);
+      return Response.json({ signed_url:'wss://api.elevenlabs.io/v1/convai/conversation?token=SIGNED_TEST' });
+    },
+  });
+  const voice = base + '/api/voice/session';
+  const input = { case_id:sample.case_id };
+  const withoutOrigin = post(base, input);
+  delete withoutOrigin.headers.Origin;
+  assert.equal((await fetch(voice, withoutOrigin)).status, 403);
+  assert.equal((await fetch(voice, post(base, input, { Authorization:'Bearer incorrecto' }))).status, 401);
+  assert.equal((await fetch(voice, post(base, input, { Origin:'https://wrong.invalid' }))).status, 403);
+  assert.equal((await fetch(voice, post(base, { ...input, voice_context:'Contenido de prueba del cliente' }))).status, 400);
+  assert.equal((await fetch(voice, post(base, { case_id:'99999999-9999-4999-8999-999999999999' }))).status, 404);
+  const health = await (await fetch(base + '/api/health', { headers:auth })).json();
+  assert.equal(health.services.elevenlabs.status, 'configured');
+  assert.equal(health.services.elevenlabs.connectivity_verified, false);
+  assert.equal(calls, 0);
+  const result = await fetch(voice, post(base, input));
+  assert.equal(result.status, 200);
+  const payload = await result.json();
+  assert.equal(payload.case_id, sample.case_id);
+  assert.equal(payload.context_linked, true);
+  assert.equal(payload.voice_context, 'Caso simulado de Contracter. ' + sample.reports.glenn.explanation);
+  assert.equal(JSON.stringify(payload).includes(agentKey), false);
+  assert.equal('versions' in payload, false);
+  assert.equal(calls, 1);
+});
+
+test('voz de evaluación live comparte sólo el estado del expediente sintético seleccionado', async t => {
+  const confidential = 'contenido marcado para permanecer sólo en expediente';
+  const live = { ...sample, mode:'live', reports:{ ...sample.reports, glenn:{ explanation:confidential } } };
+  const storeToken = 'a'.repeat(64);
+  let synthetic = true;
+  let signedSessions = 0;
+  const {base} = await launch(t, {
+    config:config({ CONTRACTER_MODE:'live', SUPABASE_URL:'https://aaaaaaaaaaaaaaaaaaaa.supabase.co',
+      CONTRACTER_STORE_READ_TOKEN:storeToken, CONTRACTER_DASHBOARD_EVALUATION_CASE_ID:sample.case_id,
+      ELEVENLABS_ENABLED:'true', ELEVENLABS_AGENT_ID:'agent_TEST_ONLY', ELEVENLABS_API_KEY:'TEST_ONLY' }),
+    fetchFn:async (url, options) => {
+      if (url.hostname === 'aaaaaaaaaaaaaaaaaaaa.supabase.co') {
+        assert.equal(JSON.parse(options.body).case_id, sample.case_id);
+        return Response.json({ synthetic, case:live });
+      }
+      signedSessions++;
+      assert.equal(url.hostname, 'api.elevenlabs.io');
+      assert.equal(options.body, undefined);
+      return Response.json({ signed_url:'wss://api.elevenlabs.io/v1/convai/conversation?token=SIGNED_TEST' });
+    },
+  });
+  const voice = base + '/api/voice/session';
+  assert.equal((await fetch(voice, post(base, { case_id:'99999999-9999-4999-8999-999999999999' }))).status, 404);
+  assert.equal(signedSessions, 0);
+  const res = await fetch(voice, post(base, { case_id:live.case_id }));
+  assert.equal(res.status, 200);
+  const payload = await res.json();
+  assert.equal(payload.context_linked, true);
+  assert.match(payload.voice_context, /Expediente de evaluación de Contracter/);
+  assert.equal(payload.voice_context.includes(confidential), false);
+  assert.equal(payload.voice_context.includes(sample.case_id), false);
+  assert.equal(signedSessions, 1);
+  synthetic = false;
+  assert.equal((await fetch(voice, post(base, { case_id:live.case_id }))).status, 404);
+  assert.equal(signedSessions, 1);
 });
 
 test('voz rechaza subdominios ajenos y nunca imprime la respuesta secreta', async t => {

@@ -33,7 +33,9 @@ live, la búsqueda normativa y la voz requieren autenticación privada.
   cotización de $0 mensuales al crear el proyecto, sin contratar un plan de pago.
   Conserva el Código de Comercio como primer candidato del corpus jurídico,
   pendiente de revisión.
-- El agente de voz Contracter · Glenn permanece en borrador por decisión del dueño.
+- Glenn tiene una rama de demostración en ElevenLabs con un expediente de ejemplo
+  y referencias documentales en español. La plataforma conserva por separado la
+  versión principal y su borrador.
 - GPT-6 Luna es el modelo base. La credencial de OpenAI está guardada en n8n.
   La prueba autenticada se detuvo por saldo agotado.
 - Los borradores 05 y 06 contienen el flujo V2 y su canal de Telegram. La
@@ -65,11 +67,27 @@ privados se entregan mediante la API autenticada, nunca desde `docs/data/`.
 sin documentos revisados devuelve cero resultados. La fecha de consulta no
 acredita vigencia jurídica.
 
-La voz requiere además `ELEVENLABS_ENABLED=true`, su API key en servidor y un
-Agent ID. Se activa únicamente al pulsar **Conectar voz** y autorizar el
-micrófono. El adaptador de sesión está preparado, pero la herramienta privada
-para que Glenn consulte un expediente aún no está enlazada. No publiques un
-agente público con acceso indiscriminado a expedientes.
+### Demostración de voz y referencias oficiales
+
+En ElevenLabs, abre **Contracter · Glenn**, selecciona la rama
+`contracter-demostracion-voz` y entra a **Preview**. Prueba con una pregunta
+como «¿Qué plazo de pago propone la V2 del expediente de muestra?».
+
+Para abrir la conversación desde el panel local, conserva `CONTRACTER_MODE=mock`
+y configura en el `.env` privado `CONTRACTER_DASHBOARD_TOKEN`,
+`ELEVENLABS_ENABLED=true`, `ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID` y
+`ELEVENLABS_AGENT_BRANCH_ID` con el identificador de la rama anterior. Arranca
+con `node --env-file=.env backend/server.mjs`. Abre `http://127.0.0.1:8780`,
+consulta el backend con el token del gateway y pulsa **Conectar voz**. El
+servidor solicita una sesión de un solo uso. La API key queda en el servidor y
+el micrófono se activa después de conceder permiso en el navegador. El contexto
+se limita a un resumen del caso de demostración o de la evaluación configurada.
+Las conversaciones pueden consumir créditos de ElevenLabs.
+
+En el panel, abre **Fuentes y actualización** para ver tres referencias oficiales
+cotejadas con páginas o localizadores. El cotejo identifica las publicaciones y
+la versión observada. La aplicación jurídica al expediente sigue su revisión
+propia antes de usar esas fuentes en una auditoría formal.
 
 ## Telegram V2 con expediente activo
 
