@@ -9,12 +9,27 @@ en [integration/ESTADO.md](integration/ESTADO.md).
 
 En Windows, abre **INICIAR_CONTRACTER.cmd**. Usa Node.js 24 o superior, ya
 instalado en este equipo, y abre `http://127.0.0.1:8780`. El servidor queda en
-una ventana identificada de PowerShell; cierra esa ventana para detenerlo.
+una ventana de terminal. Cierra esa ventana para detenerlo.
 También puedes ejecutar desde esta carpeta:
 
 ```powershell
 node backend/server.mjs
 ```
+
+Desde **Abrir Word, PDF o JSON**, puedes leer un Word `.docx` o un PDF con
+texto, revisar lo extraído y descargar un `.txt` para adjuntarlo en el chat
+privado de Telegram. El navegador hace la extracción localmente. Un PDF
+escaneado requiere reconocimiento de texto antes de importarlo. Un JSON de
+Contracter abre un expediente ya preparado. Los botones de la portada llevan
+al bot y a la vista previa de Glenn.
+Si instalas una copia para otro equipo, apunta las ligas de `docs/index.html`
+al bot y al agente de voz de esa instalación.
+
+Cuando Telegram confirme que guardó una propuesta V2, usa `/expediente` para
+obtener el ID. En el panel conectado, entra a **Conectar un expediente** y
+consulta ese ID. En **Versiones y cambios** encontrarás el texto propuesto y la
+**Bitácora de Jarvis**. Una auditoría retenida queda a la espera de que se
+resuelva el motivo indicado por el bot.
 
 No se necesita instalar Supabase, Python ni paquetes npm para abrir el panel.
 El modo predeterminado `mock` guarda una fixture SQLite local en `backend/data/`.

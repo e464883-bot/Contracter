@@ -8,6 +8,7 @@ import { resolve, dirname, extname, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { createOperatorSwitch } from './operator-switch.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -59,9 +60,16 @@ export function loadConfig(env = process.env) {
   const elevenBranch = env.ELEVENLABS_AGENT_BRANCH_ID || '';
   need(!elevenBranch || /^[A-Za-z0-9_-]{1,120}$/.test(elevenBranch), 500,
     'CONFIG_VOICE_BRANCH', 'ELEVENLABS_AGENT_BRANCH_ID debe ser un identificador de rama.');
+  const operatorEnabled = env.CONTRACTER_OPERATOR_ENABLED === 'true';
+  const operatorToken = operatorEnabled ? env.CONTRACTER_OPERATOR_TOKEN || '' : '';
+  need(!operatorEnabled || (/^[A-Za-z0-9_-]{32,128}$/.test(operatorToken) && filled(operatorToken)
+    && operatorToken !== token), 500, 'CONFIG_OPERATOR_TOKEN',
+  'Configura un token de operación privado y distinto del token de lectura.');
   return Object.freeze({
     mode, port, host: '127.0.0.1', token, provider, supabaseUrl, supabaseSecret: filled(secret) ? secret : '',
     supabaseConfigured, storeReadToken, evaluationCaseId, allowedOrigins: new Set(origins),
+    operatorToken, operatorEnv: operatorEnabled ? Object.freeze(Object.fromEntries(Object.entries(env)
+      .filter(([name]) => /^CONTRACTER_(OPERATOR_|TELEGRAM_|STORE_|GEMINI_)/.test(name)))) : null,
     sqlitePath: env.CONTRACTER_SQLITE_PATH || resolve(ROOT, 'backend/data/mock.sqlite'),
     voiceEnabled: env.ELEVENLABS_ENABLED === 'true',
     elevenKey: filled(env.ELEVENLABS_API_KEY) ? env.ELEVENLABS_API_KEY : '',
@@ -277,7 +285,9 @@ function searchArgs(body) {
 }
 
 export async function createGateway({ config = loadConfig(), fetchFn = fetch, store: suppliedStore,
+  operatorFactory = createOperatorSwitch,
   docsRoot = resolve(ROOT, 'docs'), catalogPath = resolve(ROOT, 'legal_sources/catalog.json') } = {}) {
+  const operator = config.operatorEnv ? operatorFactory({ env: config.operatorEnv, fetchFn }) : null;
   const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
   const sample = config.mode === 'mock'
     ? JSON.parse(await readFile(resolve(ROOT, 'docs/data/sample_case.json'), 'utf8')) : null;
@@ -309,6 +319,7 @@ export async function createGateway({ config = loadConfig(), fetchFn = fetch, st
     note: 'Configured sólo indica configuración presente, no una prueba de conexión ni de validez jurídica.',
   });
   const mime = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8',
+    '.mjs':'text/javascript; charset=utf-8',
     '.css':'text/css; charset=utf-8', '.json':'application/json; charset=utf-8', '.ico':'image/x-icon' };
   const server = createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -332,6 +343,18 @@ export async function createGateway({ config = loadConfig(), fetchFn = fetch, st
       }
       const url = new URL(req.url, ownOrigin);
       const path = url.pathname.replace(/^\/api(?=\/)/, '');
+      if (path === '/operator') {
+        need(['GET', 'POST'].includes(req.method), 405, 'METHOD_NOT_ALLOWED', 'Método no permitido.');
+        need(operator, 503, 'OPERATOR_UNCONFIGURED', 'El selector de operador requiere configurar el servidor local.');
+        authenticate(req, config.operatorToken);
+        need(!origin || localOrigins.has(origin), 403, 'ORIGIN_DENIED', 'Usa el selector desde el panel local.');
+        if (req.method === 'GET') { json(200, await operator.status()); return; }
+        need(localOrigins.has(origin), 403, 'ORIGIN_REQUIRED', 'Abre el selector en el panel local.');
+        const body = await readBody(req);
+        need(Object.keys(body).length === 1 && ['n8n', 'node'].includes(body.target),
+          400, 'INVALID_OPERATOR', 'Selecciona n8n o el motor Node.js.');
+        json(200, await operator.select(body.target)); return;
+      }
       if (path === '/health' && req.method === 'GET') {
         if (config.token) authenticate(req, config.token);
         const data = health();
@@ -410,12 +433,19 @@ export async function createGateway({ config = loadConfig(), fetchFn = fetch, st
       res.writeHead(200, { 'Content-Type':mime[extname(file)] });
       res.end(req.method === 'HEAD' ? undefined : content);
     } catch (error) {
-      const status = error instanceof GatewayError ? error.status : 502;
-      const code = error instanceof GatewayError ? error.code : 'GATEWAY_ERROR';
-      json(status, { error:code, message:error instanceof GatewayError ? error.message : 'Error del gateway; revise la configuración privada.' });
+      const operatorError = error?.name === 'OperatorSwitchError';
+      const trustedError = error instanceof GatewayError || operatorError;
+      const status = trustedError ? error.status : 502;
+      const code = trustedError ? error.code : 'GATEWAY_ERROR';
+      json(status, { error:code, message:trustedError ? error.message : 'Error del gateway; revise la configuración privada.' });
     }
   });
-  return { server, config, store, health, async close() { await new Promise((ok, fail) => server.close(e => e ? fail(e) : ok())); store.close(); } };
+  return { server, config, store, health, async close() {
+    try { await new Promise((ok, fail) => server.close(e => e ? fail(e) : ok())); }
+    finally {
+      try { await operator?.close(); } finally { store.close(); }
+    }
+  } };
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

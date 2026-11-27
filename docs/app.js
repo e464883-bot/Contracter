@@ -46,6 +46,7 @@ let voiceConnected = false;
 let voiceSequence = 0;
 let voiceController = null;
 let voiceSdkPromise = null;
+let importedContract = null;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -245,7 +246,7 @@ async function requestVoiceSession(base, caseId, token) {
 }
 
 async function stopVoice(reason = "Sesión de voz cerrada.") {
-  ++voiceSequence;
+  const sequence = ++voiceSequence;
   voiceController?.abort();
   voiceController = null;
   const session = voiceSession;
@@ -256,6 +257,7 @@ async function stopVoice(reason = "Sesión de voz cerrada.") {
     try { session.setMicMuted(true); } catch { /* Cleanup continues without logging signed URLs. */ }
     try { await session.endSession(); } catch { /* The page never retries a connection automatically. */ }
   }
+  if (sequence !== voiceSequence) return;
   updateVoiceAvailability();
   setText("voice-status", reason);
 }
@@ -437,6 +439,15 @@ function renderCosts(data) {
 
 function render(data, imported, sourceLabel) {
   const notice = $("simulation-notice");
+  if (importedContract) {
+    importedContract = null;
+    setText("contract-import-title", "Texto extraído del contrato");
+    setText("contract-import-note", "");
+    setText("contract-import-text", "");
+    $("contract-import-download").disabled = true;
+    $("contract-import-preview").hidden = true;
+  }
+  notice.hidden = false;
   const isMock = data.mode === "mock";
   const fromBackend = typeof sourceLabel === "string" && sourceLabel.startsWith("backend propio");
   if (!fromBackend && Object.hasOwn(data, "evaluation")) data = { ...data, evaluation: false };
@@ -531,11 +542,13 @@ $("backend-form").addEventListener("submit", async (event) => {
     id = $("api-case-id").value.trim();
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new Error("Introduce un ID de expediente con formato UUID.");
   } catch (error) { setText("backend-message", error.message); return; }
+  const request = ++renderRequest;
+  $("reset-demo").disabled = false;
   await stopVoice("Sesión cerrada al cambiar la consulta del backend.");
+  if (request !== renderRequest) return;
   currentBackendBase = "";
   backendHealth = null;
   renderServiceStatus(null);
-  const request = ++renderRequest;
   activeApiControllers.forEach((controller) => controller.abort());
   activeApiControllers = [];
   const origin = new URL(base).origin;
@@ -602,10 +615,11 @@ async function loadDemo() {
   const request = ++renderRequest;
   clearBackendContext("Demostración local", "DEMO · SIN CONEXIÓN", "SIN CONSULTAR", "Demostración local. Consulta el backend explícitamente para cargar un expediente del servidor.");
   await stopVoice("Voz desactivada al abrir la demostración.");
+  if (request !== renderRequest) return;
   message("Cargando el expediente de demostración…");
   $("reset-demo").disabled = true;
   try {
-    if (location.protocol === "file:") throw new Error("Abre el expediente manualmente con «Abrir expediente JSON» y elige docs/data/sample_case.json. La carga automática requiere un servidor HTTP local.");
+    if (location.protocol === "file:") throw new Error("Usa el selector de archivos para abrir docs/data/sample_case.json. La carga automática requiere iniciar el servidor local.");
     const response = await fetch(DEMO_URL, { cache: "no-store", credentials: "omit" });
     if (!response.ok) throw new Error("No se encontró el ejemplo (HTTP " + response.status + "). Usa el selector para abrir un expediente JSON.");
     const content = await response.text();
@@ -619,23 +633,87 @@ async function loadDemo() {
   }
 }
 
+function showContractFile(file, { text: rawText, emptyPages = [] }) {
+  const text = rawText.replace(/\r\n?/g, "\n").trim();
+  const filename = file.name.replace(/\.[^.]+$/, "").replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim().slice(0, 100) || "contrato";
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const withinLimits = text.length <= 12_000 && blob.size <= 36_000 && text.split("\n").length <= 1_500;
+  importedContract = { blob, filename: filename + ".txt" };
+  currentCase = null;
+  $("case-content").hidden = true;
+  $("simulation-notice").hidden = true;
+  setText("contract-import-title", file.name);
+  setText("contract-import-text", text);
+  const firstPages = emptyPages.slice(0, 12).join(", ");
+  const remainingPages = emptyPages.length - 12;
+  const incompleteNote = emptyPages.length
+    ? "No se extrajo texto de las páginas " + firstPages + (remainingPages > 0 ? " y " + remainingPages + " más" : "")
+      + ". Revisa esas páginas o aplica OCR antes de enviar el contrato completo. "
+    : "";
+  const instructions = withinLimits
+    ? "Revisa el texto extraído. Después descarga el .txt y adjúntalo en el chat privado de Contracter."
+    : "Telegram admite hasta 12,000 caracteres, 36,000 bytes y 1,500 líneas por contrato. Descarga el texto y recórtalo antes de enviarlo.";
+  setText("contract-import-note", incompleteNote + instructions);
+  setText("contract-import-download", withinLimits && !emptyPages.length ? "Descargar .txt para Telegram" : "Descargar texto extraído (.txt)");
+  $("contract-import-download").disabled = false;
+  $("contract-import-preview").hidden = false;
+  message("Texto leído en este navegador. Puedes enviarlo al bot cuando esté listo para revisión.");
+  $("contract-import-text").focus();
+}
+
+$("contract-import-download").addEventListener("click", () => {
+  if (!importedContract) return;
+  const downloadUrl = URL.createObjectURL(importedContract.blob);
+  const downloadLink = element("a");
+  downloadLink.href = downloadUrl;
+  downloadLink.download = importedContract.filename;
+  document.body.append(downloadLink);
+  downloadLink.click();
+  downloadLink.remove();
+  setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+});
+
 $("case-file").addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
+  event.target.value = "";
   const request = ++renderRequest;
   $("reset-demo").disabled = false;
+  if ($("load-server").disabled) {
+    activeApiControllers.forEach((controller) => controller.abort());
+    activeApiControllers = [];
+    $("load-server").disabled = false;
+    setBadge($("backend-status"), "CONSULTA CANCELADA", "neutral");
+    setText("backend-message", "La consulta se canceló al seleccionar el archivo local.");
+  }
+  const isDocument = /\.(?:docx|pdf)$/i.test(file.name);
+  message(isDocument ? "Extrayendo el texto del contrato…" : "Leyendo el expediente JSON…");
   try {
-    if (file.size > MAX_FILE_BYTES) throw new Error("El archivo supera el límite de 2 MB. Selecciona un expediente más pequeño.");
-    const data = checkDisplayShape(JSON.parse(await file.text()));
-    if (request === renderRequest) {
-      await stopVoice("Voz desactivada al abrir un archivo local.");
-      clearBackendContext("Archivo local · sin conexión", "ARCHIVO LOCAL", "SIN CONSULTAR", "El archivo se leyó en este navegador. No es una respuesta del backend.");
-      render(data, true);
+    if (/\.doc$/i.test(file.name)) throw new Error("Guarda el documento de Word como .docx y vuelve a seleccionarlo.");
+    let data;
+    let extracted;
+    if (isDocument) {
+      if (location.protocol === "file:") throw new Error("Para abrir Word o PDF, inicia Contracter con INICIAR_CONTRACTER.cmd y vuelve a elegir el archivo.");
+      const parser = await import("./contract-import.mjs").catch(() => {
+        throw new Error("No se pudo cargar el lector de documentos. Actualiza el panel y vuelve a intentarlo.");
+      });
+      if (request !== renderRequest) return;
+      extracted = await parser.extractContractDocument(file);
+    } else {
+      if (file.size > MAX_FILE_BYTES) throw new Error("El expediente JSON supera el límite de 2 MB.");
+      data = checkDisplayShape(JSON.parse(await file.text()));
     }
+    if (request !== renderRequest) return;
+    await stopVoice("Voz desactivada al abrir un archivo local.");
+    if (request !== renderRequest) return;
+    clearBackendContext("Archivo local · sin conexión", "ARCHIVO LOCAL", "SIN CONSULTAR", "El archivo se leyó en este navegador.");
+    if (isDocument) showContractFile(file, extracted);
+    else render(data, true);
   } catch (error) {
-    if (request === renderRequest) message(error instanceof SyntaxError ? "No se pudo leer el archivo: no contiene JSON válido. El expediente anterior se conserva." : error.message + " El expediente anterior se conserva.", true);
-  } finally {
-    event.target.value = "";
+    if (request === renderRequest) {
+      const detail = !isDocument && error instanceof SyntaxError ? "El archivo no contiene JSON válido." : error.message;
+      message(detail + " Se conserva la vista anterior.", true);
+    }
   }
 });
 $("reset-demo").addEventListener("click", loadDemo);

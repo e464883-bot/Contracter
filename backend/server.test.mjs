@@ -27,6 +27,7 @@ test('configuración live falla cerrada sin Supabase/token y rechaza origen inse
   assert.throws(() => config({ CONTRACTER_ALLOWED_ORIGINS:'http://example.invalid' }), /HTTP sólo/);
   assert.throws(() => config({ CONTRACTER_DASHBOARD_TOKEN:'corto' }), /32 caracteres/);
   assert.throws(() => config({ ELEVENLABS_AGENT_BRANCH_ID:'branch&id=other' }), { code:'CONFIG_VOICE_BRANCH' });
+  assert.throws(() => config({ CONTRACTER_OPERATOR_ENABLED:'true', CONTRACTER_OPERATOR_TOKEN:testToken }), { code:'CONFIG_OPERATOR_TOKEN' });
 });
 
 test('SQLite sólo conserva fixture identificada, 13 roles y eventos; seed idempotente', async () => {
@@ -62,6 +63,32 @@ test('inicio mock sin claves permite su fixture pública y mantiene voz/RAG cerr
   assert.equal(health.authentication,'unconfigured');
   assert.equal((await fetch(base+'/api/legal/search',post(base,{query:'pago'}))).status,401);
   assert.equal((await fetch(base+'/api/voice/session',post(base,{case_id:sample.case_id}))).status,401);
+  assert.equal((await fetch(base+'/api/operator')).status,503);
+});
+
+test('cambiar el operador requiere token propio, origen local y destino explícito', async t => {
+  const token = 'operator-test-token-is-separate-32-characters';
+  const auth = { Authorization:`Bearer ${token}` };
+  const calls = [];
+  const { base } = await launch(t, {
+    config: config({ CONTRACTER_OPERATOR_ENABLED:'true', CONTRACTER_OPERATOR_TOKEN:token,
+      CONTRACTER_ALLOWED_ORIGINS:'https://lectura.example.invalid' }),
+    operatorFactory: () => ({
+      async status() { return { active:'n8n', switching:false }; },
+      async select(target) { calls.push(target); return { active:target, switching:false }; },
+      async close() {},
+    }),
+  });
+  const url = base + '/api/operator';
+  assert.equal((await fetch(url, { headers:{ Authorization:`Bearer ${testToken}` } })).status, 401);
+  assert.deepEqual(await (await fetch(url, { headers:auth })).json(), { active:'n8n', switching:false });
+  assert.equal((await fetch(url, post(base,{ target:'node' },{ ...auth, Origin:'https://lectura.example.invalid' }))).status, 403);
+  assert.equal((await fetch(url, post(base,{ target:'node', workflow_id:'otro' },auth))).status, 400);
+  assert.deepEqual(calls, []);
+  const response = await fetch(url, post(base,{ target:'node' },auth));
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { active:'node', switching:false });
+  assert.deepEqual(calls, ['node']);
 });
 
 test('host/origen ajenos, secretos y cuerpos incorrectos se bloquean', async t => {

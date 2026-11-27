@@ -23,6 +23,40 @@ mismo proyecto de Supabase y dos tokens vigentes de Contracter, uno con alcance
 `telegram` y el otro con alcance `audit`. El valor de cada token se pega sin
 el prefijo `Bearer`. Mantén `.env.standby` en tu equipo.
 
+## Cambiar el operador desde el panel
+
+El selector **Operador de Telegram** puede pasar el bot entre n8n y el motor
+Node.js de este repositorio. Supabase sigue siendo el almacén de expedientes.
+El panel y las sesiones de ElevenLabs usan su configuración privada habitual.
+
+1. Completa también el bloque `CONTRACTER_OPERATOR_*` de `.env.standby.example`
+   en tu `.env.standby` privado y habilita `CONTRACTER_OPERATOR_ENABLED=true`.
+   Define un token privado de operación distinto del token del panel. Usa la
+   URL base de tu instancia n8n Cloud, el ID del workflow que recibe mensajes de
+   Telegram y su URL de webhook exacta. Configura una clave de n8n con permisos
+   `workflow:read` y `workflow:activate` cuando tu versión permita limitarla.
+   [Autenticación de n8n](https://docs.n8n.io/connect/n8n-api/authentication.md)
+2. Si el servidor debe poder volver a publicar n8n tras un reinicio, fija
+   `CONTRACTER_OPERATOR_N8N_VERSION_ID` al ID de la versión publicada que ya
+   comprobaste. El selector comprueba el webhook y requiere un único disparador
+   de Telegram anterior a 1.3 para proteger los mensajes pendientes.
+3. En la computadora donde correrá el bot, abre el servidor con
+   `node --env-file=.env.standby --env-file-if-exists=.env backend/server.mjs`.
+   Configura en `.env` el modo conectado y el acceso de lectura del panel si
+   deseas consultar los expedientes del bot. Usa el mismo proyecto de Supabase
+   en ambos operadores.
+4. Abre el panel local, entra a **Operador de Telegram**, proporciona el token
+   privado y pulsa **Consultar operador**. Selecciona **n8n** o **Node.js · código
+   de GitHub** y pulsa **Aplicar cambio**. La página comprueba el nuevo estado
+   antes de confirmarlo. La computadora debe quedar encendida mientras Node.js
+   atiende Telegram. Usa el selector o el inicio por terminal para operar
+   Node.js en esa computadora, cada uno por separado.
+
+Si el acceso al operador queda pendiente de configuración, puedes conservar n8n
+como flujo principal y revisar los pasos manuales siguientes. En la primera
+prueba conectada, usa un bot de prueba y verifica el mismo expediente al cambiar
+de operador.
+
 ## Probar y cambiar de servidor
 
 1. Ejecuta `node --test backend/telegram-standby.test.mjs` para probar el flujo

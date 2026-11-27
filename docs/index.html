@@ -10,6 +10,7 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
+  <script src="operator-control.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Saltar al contenido</a>
@@ -44,10 +45,20 @@
           <div><p class="eyebrow">MESA DE AUDITORÍA</p><h1>Decide con el expediente a la vista.</h1><p class="page-description">Revisa cambios, fuentes y aprobación antes de liberar la propuesta V2.</p></div>
           <div class="file-actions">
             <button class="button button-secondary" id="reset-demo" type="button">Cargar demo</button>
-            <label class="button button-primary" for="case-file"><span aria-hidden="true">↑</span> Abrir expediente JSON</label>
-            <input id="case-file" class="file-input" type="file" accept=".json,application/json">
+            <label class="button button-primary" for="case-file"><span aria-hidden="true">↑</span> Abrir Word, PDF o JSON</label>
+            <input id="case-file" class="file-input" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.pdf,application/pdf,.json,application/json">
           </div>
         </div>
+        <nav class="panel channel-access" aria-label="Canales de Contracter">
+          <div>
+            <h2>Envía un contrato o prueba la voz</h2>
+            <p>Abre un Word o PDF para preparar el texto. Envíalo a Telegram y consulta aquí las versiones y la bitácora cuando el expediente quede guardado.</p>
+          </div>
+          <div class="channel-actions">
+            <a class="button button-primary" href="https://t.me/ContracterExampleBot" target="_blank" rel="noopener noreferrer">Subir contrato en Telegram <span aria-hidden="true">↗</span></a>
+            <a class="button button-secondary" href="https://elevenlabs.io/app/agents" target="_blank" rel="noopener noreferrer">Abrir Glenn en ElevenLabs <span aria-hidden="true">↗</span></a>
+          </div>
+        </nav>
         <div id="load-message" class="load-message" role="status" aria-live="polite">Cargando el expediente de demostración…</div>
         <div id="simulation-notice" class="simulation-notice"><span class="notice-icon" aria-hidden="true">i</span><div><strong>Entorno de simulación</strong><p>Datos ficticios para probar la tubería. No representan una auditoría jurídica ni una aprobación humana real.</p></div><span class="outline-tag">MOCK</span></div>
 
@@ -59,6 +70,25 @@
                 <label class="backend-token">Token de acceso temporal, si tu servidor lo exige<input id="api-token" type="password" placeholder="Sólo en memoria durante esta sesión" autocomplete="off" spellcheck="false"></label>
                 <div class="backend-actions"><button class="button button-primary" id="load-server" type="submit">Consultar backend</button><button class="button button-secondary" id="clear-session" type="button">Borrar acceso temporal</button></div>
               </form><p id="backend-message" class="backend-message" role="status" aria-live="polite">Sin consultas externas. Configura una URL propia para comenzar.</p><p class="microcopy">Por defecto se permite únicamente el mismo origen de esta página. Un dominio diferente necesita autorización explícita en la configuración pública, CSP y CORS del servidor. El token nunca se guarda en el archivo ni en almacenamiento persistente.</p>
+            </div>
+          </details>
+        </section>
+
+        <section class="panel backend-panel" aria-labelledby="operator-title">
+          <details><summary><strong id="operator-title">Operador de Telegram</strong><span class="badge badge-neutral" id="operator-badge">POR COMPROBAR</span></summary>
+            <div class="backend-body">
+              <p>Elige quién atiende el chat. n8n usa el flujo publicado. Node.js ejecuta el motor del repositorio de GitHub en tu servidor.</p>
+              <form id="operator-form" autocomplete="off">
+                <div class="backend-fields">
+                  <label for="operator-target">Operador<select id="operator-target"><option value="n8n">n8n</option><option value="node">Node.js · código de GitHub</option></select></label>
+                  <label for="operator-token">Token privado de operación<input id="operator-token" type="password" autocomplete="off" spellcheck="false" required></label>
+                </div>
+                <div class="backend-actions">
+                  <button class="button button-secondary" id="operator-check" type="button">Consultar operador</button>
+                  <button class="button button-primary" id="operator-apply" type="submit">Aplicar cambio</button>
+                </div>
+              </form>
+              <p id="operator-status" class="backend-message" role="status" aria-live="polite">Consulta el estado antes de aplicar un cambio al bot.</p>
             </div>
           </details>
         </section>
@@ -116,6 +146,18 @@
             <p id="provider-note">Consulta breve con el caso ficticio. El comando estará disponible cuando se publique el flujo de evaluación.</p>
           </div>
           <p id="provider-status" class="provider-status" role="status"></p>
+        </section>
+
+        <section id="contract-import-preview" class="panel section-panel contract-import-preview" aria-labelledby="contract-import-title" hidden>
+          <div class="panel-heading">
+            <div><p class="eyebrow">CONTRATO ORIGINAL</p><h2 id="contract-import-title">Texto extraído</h2></div>
+          </div>
+          <p id="contract-import-note" role="status" aria-live="polite"></p>
+          <pre id="contract-import-text" tabindex="0" aria-label="Texto extraído del contrato"></pre>
+          <div class="channel-actions">
+            <button class="button button-primary" id="contract-import-download" type="button" disabled>Descargar .txt para Telegram</button>
+            <a class="button button-secondary" href="https://t.me/ContracterExampleBot" target="_blank" rel="noopener noreferrer">Abrir chat de Contracter <span aria-hidden="true">↗</span></a>
+          </div>
         </section>
 
         <div id="case-content" hidden>
