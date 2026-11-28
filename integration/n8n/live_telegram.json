@@ -173,7 +173,7 @@
         "workflowId": {
           "__rl": true,
           "mode": "id",
-          "value": "TODO_WORKFLOW_ID"
+          "value": "TODO_GEMINI_WORKFLOW_ID"
         },
         "mode": "once",
         "options": {
@@ -243,7 +243,7 @@
         "workflowId": {
           "__rl": true,
           "mode": "id",
-          "value": "TODO_WORKFLOW_ID"
+          "value": "TODO_LIVE_WORKFLOW_ID"
         },
         "mode": "once",
         "options": {
