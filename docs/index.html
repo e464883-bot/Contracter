@@ -56,7 +56,7 @@
           </div>
           <div class="channel-actions">
             <a class="button button-primary" href="https://t.me/ContracterExampleBot" target="_blank" rel="noopener noreferrer">Subir contrato en Telegram <span aria-hidden="true">↗</span></a>
-            <a class="button button-secondary" href="https://elevenlabs.io/app/agents" target="_blank" rel="noopener noreferrer">Abrir Glenn en ElevenLabs <span aria-hidden="true">↗</span></a>
+            <a class="button button-secondary" href="https://elevenlabs.io/app/agents" target="_blank" rel="noopener noreferrer">Vista previa de Glenn <span aria-hidden="true">↗</span></a>
           </div>
         </nav>
         <div id="load-message" class="load-message" role="status" aria-live="polite">Cargando el expediente de demostración…</div>
@@ -188,6 +188,10 @@
                     <article class="version-pane"><div class="version-heading"><span class="version-label">V1 <span>ORIGINAL</span></span><span class="version-key"><span class="line-dot old-dot"></span> Texto anterior</span></div><ol id="version-v1" class="contract-lines" aria-label="Contrato original, líneas numeradas"></ol><details class="hash-detail"><summary>Huella SHA-256 del original</summary><code id="hash-v1"></code></details></article>
                     <article class="version-pane"><div class="version-heading"><span class="version-label version-label-new">V2 <span>PROPUESTA</span></span><span class="version-key"><span class="line-dot new-dot"></span> Cambio registrado</span></div><ol id="version-v2" class="contract-lines" aria-label="Propuesta V2, líneas numeradas"></ol><details class="hash-detail"><summary>Huella SHA-256 de la propuesta</summary><code id="hash-v2"></code></details></article>
                   </div>
+                  <div class="version-download">
+                    <button class="button button-secondary" id="download-v2" type="button" disabled>Descargar V2 (.txt)</button>
+                    <p id="download-v2-note" class="microcopy" role="status">Carga un expediente con una propuesta V2.</p>
+                  </div>
                   <p class="section-footnote">Las marcas corresponden a líneas registradas en la bitácora. La comparación no acredita la validez jurídica del texto.</p>
                 </div>
                 <div id="changes-panel" role="tabpanel" aria-labelledby="changes-tab" hidden><div id="changelog" class="changelog"></div></div>
@@ -221,7 +225,7 @@
 
             <aside class="secondary-column" aria-label="Contexto y controles del caso">
               <section class="panel glenn-panel"><div class="glenn-heading"><span class="agent-initial glenn-initial" aria-hidden="true">G</span><div><p class="eyebrow">GLENN RADARS</p><h2>En palabras claras.</h2></div></div><p id="glenn-explanation"></p>
-                <div class="voice-control"><div class="voice-heading"><span class="waveform" aria-hidden="true">▁▃▆▂▇▃▅▁</span><div><strong>Conversar con Glenn</strong><span>ElevenLabs · voz por activación explícita</span></div></div><p class="voice-disclosure">Al conectar, el navegador solicitará acceso al micrófono para enviar tu voz a ElevenLabs. En la demostración también envía un resumen de evaluación. Puede consumir el saldo de tu cuenta. La sesión se cierra al ocultar esta página.</p><div class="voice-actions"><button class="button button-secondary" id="voice-connect" type="button" disabled>Conectar voz</button><button class="button button-secondary" id="voice-disconnect" type="button" disabled>Desconectar</button></div><p id="voice-status" class="voice-status" role="status" aria-live="polite">Para habilitar la voz, carga el expediente desde un backend configurado con ElevenLabs y acceso privado.</p></div>
+                <div class="voice-control"><div class="voice-heading"><span class="waveform" aria-hidden="true">▁▃▆▂▇▃▅▁</span><div><strong>Conversar con Glenn</strong><span>ElevenLabs · voz por activación explícita</span></div></div><p class="voice-disclosure">El micrófono envía tu voz a ElevenLabs cuando lo autorizas. El expediente privado comparte un resumen de estado sólo con tu confirmación. La demo usa su propio resumen. La llamada puede consumir saldo y se cierra al ocultar la página.</p><div class="voice-actions"><button class="button button-secondary" id="voice-connect" type="button" disabled>Conectar voz</button><button class="button button-secondary" id="voice-disconnect" type="button" disabled>Desconectar</button></div><p id="voice-status" class="voice-status" role="status" aria-live="polite">Para habilitar la voz, carga el expediente desde un backend configurado con ElevenLabs y acceso privado.</p></div>
               </section>
               <section class="panel context-panel"><div class="panel-heading"><h2>Contexto del trato</h2><span class="small-agent">JANE</span></div><dl id="context-fields" class="context-fields"></dl><h3 class="list-heading">Objetivos declarados</h3><ul id="context-objectives" class="compact-list"></ul></section>
               <section class="panel controls-panel"><div class="panel-heading"><h2>Guardrails</h2><span class="small-agent">CONTROL</span></div><div id="guardrail-list" class="guardrail-list"></div><div class="legal-source-note"><strong>Base jurídica</strong><p id="legal-basis-note"></p></div></section>

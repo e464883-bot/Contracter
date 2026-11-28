@@ -28,8 +28,9 @@ al bot y al agente de voz de esa instalación.
 Cuando Telegram confirme que guardó una propuesta V2, usa `/expediente` para
 obtener el ID. En el panel conectado, entra a **Conectar un expediente** y
 consulta ese ID. En **Versiones y cambios** encontrarás el texto propuesto y la
-**Bitácora de Jarvis**. Una auditoría retenida queda a la espera de que se
-resuelva el motivo indicado por el bot.
+**Bitácora de Jarvis**. **Descargar V2 (.txt)** conserva el texto de la propuesta
+y la etiqueta del expediente se refleja en el nombre del archivo. Una auditoría
+retenida queda a la espera de que se resuelva el motivo indicado por el bot.
 
 No se necesita instalar Supabase, Python ni paquetes npm para abrir el panel.
 El modo predeterminado `mock` guarda una fixture SQLite local en `backend/data/`.
@@ -98,6 +99,14 @@ servidor solicita una sesión de un solo uso. La API key queda en el servidor y
 el micrófono se activa después de conceder permiso en el navegador. El contexto
 se limita a un resumen del caso de demostración o de la evaluación configurada.
 Las conversaciones pueden consumir créditos de ElevenLabs.
+
+Para enlazar por voz una V2 real, configura la instalación privada de un solo
+chat con `CONTRACTER_MODE=live` y el bloque de voz privada de `.env.example`.
+El servidor consulta la versión guardada con el alcance de Telegram del chat
+autorizado y comprueba sus huellas. La sesión requiere que el usuario confirme
+compartir los conteos y el estado de revisión con ElevenLabs. El historial y el
+texto del contrato permanecen en sus canales privados. Usa **Conectar voz**
+desde ese expediente para iniciar la sesión.
 
 En el panel, abre **Fuentes y actualización** para ver tres referencias oficiales
 cotejadas con páginas o localizadores. El cotejo identifica las publicaciones y
