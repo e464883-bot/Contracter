@@ -47,6 +47,7 @@ let voiceSequence = 0;
 let voiceController = null;
 let voiceSdkPromise = null;
 let importedContract = null;
+let versionDownload = null;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -66,6 +67,39 @@ function list(id, values, emptyText) {
 function message(text, isError = false) {
   setText("load-message", text);
   $("load-message").classList.toggle("is-error", isError);
+}
+
+function beginCaseUpdate() {
+  versionDownload = null;
+  $("download-v2").disabled = true;
+  setText("download-v2-note", "Carga un expediente con una propuesta V2 para descargarla.");
+  return ++renderRequest;
+}
+
+function prepareV2Download(data, fromBackend) {
+  const text = data.versions.v2.text;
+  if (!text.trim()) return;
+  const suffix = data.mode === "mock" ? "demostracion" : data.evaluation ? "evaluacion" : fromBackend ? "propuesta" : "archivo-local";
+  const identifier = data.case_id.replace(/[^a-z0-9-]/gi, "").slice(0, 36);
+  versionDownload = { text, filename: ["Contracter", "V2", suffix, identifier].filter(Boolean).join("-") + ".txt" };
+  $("download-v2").disabled = false;
+  setText("download-v2-note", {
+    demostracion: "Texto de la V2 del expediente de demostración.",
+    evaluacion: "Texto de la V2 del expediente de evaluación.",
+    propuesta: "Texto de la propuesta del expediente. Consulta su estado de revisión en el panel.",
+    "archivo-local": "Texto de la V2 del archivo local. Su estado de revisión está sin verificar."
+  }[suffix]);
+}
+
+function downloadFile(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = element("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // A deliberately small display gate; this is not the strict Python validator.
@@ -188,16 +222,29 @@ function renderServiceStatus(health) {
 
 function canStartVoice() {
   return Boolean(currentCase && currentBackendBase && apiSessionToken) &&
-    backendHealth?.mode === currentCase.mode && backendHealth?.services?.elevenlabs?.status === "configured";
+    backendHealth?.mode === currentCase.mode && backendHealth?.services?.elevenlabs?.status === "configured" &&
+    (currentCase.mode === "mock" || currentCase.evaluation === true || voiceSharesPrivateCase());
+}
+
+function voiceSharesPrivateCase() {
+  return currentCase?.mode === "live" && currentCase?.evaluation !== true &&
+    backendHealth?.services?.elevenlabs?.live_case_context === true;
 }
 
 function updateVoiceAvailability() {
   $("voice-connect").disabled = !canStartVoice() || voiceStarting || Boolean(voiceSession);
   $("voice-disconnect").disabled = !voiceStarting && !voiceSession;
   if (!voiceSession && !voiceStarting) {
-    setText("voice-status", canStartVoice()
-      ? "Disponible para iniciar. Al pulsar Conectar voz se solicitará una sesión autorizada y permiso de micrófono."
-      : "Para habilitar la voz, carga el expediente desde un backend configurado con ElevenLabs y acceso privado.");
+    if (!canStartVoice()) {
+      const needsPrivateContext = currentBackendBase && currentCase?.mode === "live" && currentCase?.evaluation !== true && !voiceSharesPrivateCase();
+      setText("voice-status", needsPrivateContext
+        ? "Este servidor aún no habilita la voz vinculada al expediente privado. Consulta el caso en el panel o en Telegram."
+        : "Para habilitar la voz, carga el expediente desde un backend configurado con ElevenLabs y acceso privado.");
+    } else if (voiceSharesPrivateCase()) {
+      setText("voice-status", "Puedes autorizar que Glenn reciba un resumen del estado de este expediente al iniciar la conversación.");
+    } else {
+      setText("voice-status", "Disponible para iniciar. Al pulsar Conectar voz se solicitará una sesión autorizada y permiso de micrófono.");
+    }
   }
 }
 
@@ -225,12 +272,14 @@ function loadVoiceSdk() {
   return voiceSdkPromise;
 }
 
-async function requestVoiceSession(base, caseId, token) {
+async function requestVoiceSession(base, caseId, token, shareCaseSummary) {
   voiceController = new AbortController();
   const controller = voiceController;
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(base + "/voice/session", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ case_id: caseId }), credentials: "omit", cache: "no-store", redirect: "error", signal: controller.signal });
+    const body = { case_id: caseId };
+    if (shareCaseSummary) body.share_case_summary = true;
+    const response = await fetch(base + "/voice/session", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify(body), credentials: "omit", cache: "no-store", redirect: "error", signal: controller.signal });
     if (!response.ok) throw new Error("No se autorizó la sesión de voz (HTTP " + response.status + "). Revisa el acceso al caso y la configuración del servidor.");
     const text = await response.text();
     if (text.length > 16384) throw new Error("Respuesta de voz no válida.");
@@ -239,8 +288,9 @@ async function requestVoiceSession(base, caseId, token) {
     if (payload.case_id !== caseId) throw new Error("La sesión no corresponde al expediente solicitado.");
     const context = payload.context_linked === true ? payload.voice_context : null;
     if (payload.context_linked === true && (typeof context !== "string" || !context.trim() || context.length > 700)) {
-      throw new Error("El contexto de evaluación no es válido.");
+      throw new Error("El resumen del expediente no es válido.");
     }
+    if (shareCaseSummary && !context) throw new Error("El servidor no pudo vincular este expediente. La sesión de voz no se inició.");
     return { signedUrl: validateSignedVoiceUrl(payload.signed_url), context };
   } finally { clearTimeout(timer); if (voiceController === controller) voiceController = null; }
 }
@@ -264,12 +314,17 @@ async function stopVoice(reason = "Sesión de voz cerrada.") {
 
 async function startVoice() {
   if (!canStartVoice() || voiceStarting || voiceSession) { updateVoiceAvailability(); return; }
+  const shareCaseSummary = voiceSharesPrivateCase();
+  if (shareCaseSummary && !window.confirm("¿Compartir con ElevenLabs un resumen del estado de este expediente para esta sesión? El resumen contiene el estado de revisión y los conteos de cambios. El texto contractual permanece en el panel. El uso de voz puede consumir saldo.")) {
+    setText("voice-status", "Sesión cancelada. No se compartió el resumen.");
+    return;
+  }
   const sequence = ++voiceSequence;
   voiceStarting = true;
   updateVoiceAvailability();
   setText("voice-status", "Solicitando una sesión autorizada. El micrófono se activa sólo si aceptas su permiso.");
   try {
-    const voiceInfo = await requestVoiceSession(currentBackendBase, currentCase.case_id, apiSessionToken);
+    const voiceInfo = await requestVoiceSession(currentBackendBase, currentCase.case_id, apiSessionToken, shareCaseSummary);
     if (sequence !== voiceSequence || document.hidden) return;
     const sdk = await loadVoiceSdk();
     if (sequence !== voiceSequence || document.hidden) return;
@@ -279,7 +334,13 @@ async function startVoice() {
       ...(voiceInfo.context ? { dynamicVariables: { contracter_context: voiceInfo.context } } : {}),
       workletPaths: { rawAudioProcessor: new URL(VOICE_SDK.inputWorklet, document.baseURI).href, audioConcatProcessor: new URL(VOICE_SDK.outputWorklet, document.baseURI).href },
       libsampleratePath: new URL(VOICE_SDK.resampler, document.baseURI).href,
-      onConnect: () => { if (sequence === voiceSequence) { voiceConnected = true; setText("voice-status", "Conectado a ElevenLabs. Pulsa Desconectar para cerrar el micrófono." + (voiceInfo.context ? " La sesión incluye el resumen de evaluación." : " Esta sesión funciona sin acceso al expediente.")); } },
+      onConnect: () => {
+        if (sequence !== voiceSequence) return;
+        voiceConnected = true;
+        const detail = shareCaseSummary ? " La sesión incluye el estado del expediente."
+          : voiceInfo.context ? " La sesión incluye el resumen de evaluación." : " Esta sesión funciona sin acceso al expediente.";
+        setText("voice-status", "Conectado a ElevenLabs. Pulsa Desconectar para cerrar el micrófono." + detail);
+      },
       onDisconnect: () => { if (sequence === voiceSequence) { voiceSession = null; voiceStarting = false; voiceConnected = false; updateVoiceAvailability(); setText("voice-status", "ElevenLabs cerró la sesión de voz."); } },
       onError: () => { if (sequence === voiceSequence) void stopVoice("La sesión de voz se interrumpió. Revisa permiso de micrófono, acceso y saldo en el proveedor."); }
     });
@@ -496,6 +557,7 @@ function render(data, imported, sourceLabel) {
   list("watson-actions", data.reports.watson.recommendations, "Sin acciones documentadas.");
   setText("glenn-explanation", data.reports.glenn.explanation);
   $("case-content").hidden = false;
+  prepareV2Download(data, fromBackend);
   message(imported ? "Archivo leído sólo en este navegador. Los estados son declarados; ejecuta el validador antes de utilizar o publicar el expediente." : "");
 }
 
@@ -542,7 +604,7 @@ $("backend-form").addEventListener("submit", async (event) => {
     id = $("api-case-id").value.trim();
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new Error("Introduce un ID de expediente con formato UUID.");
   } catch (error) { setText("backend-message", error.message); return; }
-  const request = ++renderRequest;
+  const request = beginCaseUpdate();
   $("reset-demo").disabled = false;
   await stopVoice("Sesión cerrada al cambiar la consulta del backend.");
   if (request !== renderRequest) return;
@@ -606,13 +668,13 @@ function clearBackendContext(label, chip, badge, detail) {
 }
 
 $("clear-session").addEventListener("click", () => {
-  ++renderRequest;
+  beginCaseUpdate();
   clearBackendContext("Backend sin consultar", "SIN SESIÓN DE API", "ACCESO BORRADO", "Acceso temporal borrado y consultas pendientes canceladas. El expediente ya mostrado se conserva.");
   void stopVoice("Sesión cerrada y acceso temporal borrado.");
 });
 
 async function loadDemo() {
-  const request = ++renderRequest;
+  const request = beginCaseUpdate();
   clearBackendContext("Demostración local", "DEMO · SIN CONEXIÓN", "SIN CONSULTAR", "Demostración local. Consulta el backend explícitamente para cargar un expediente del servidor.");
   await stopVoice("Voz desactivada al abrir la demostración.");
   if (request !== renderRequest) return;
@@ -661,23 +723,20 @@ function showContractFile(file, { text: rawText, emptyPages = [] }) {
   $("contract-import-text").focus();
 }
 
+$("download-v2").addEventListener("click", () => {
+  if (!versionDownload) return;
+  downloadFile(new Blob([versionDownload.text], { type: "text/plain;charset=utf-8" }), versionDownload.filename);
+});
+
 $("contract-import-download").addEventListener("click", () => {
-  if (!importedContract) return;
-  const downloadUrl = URL.createObjectURL(importedContract.blob);
-  const downloadLink = element("a");
-  downloadLink.href = downloadUrl;
-  downloadLink.download = importedContract.filename;
-  document.body.append(downloadLink);
-  downloadLink.click();
-  downloadLink.remove();
-  setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+  if (importedContract) downloadFile(importedContract.blob, importedContract.filename);
 });
 
 $("case-file").addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
   event.target.value = "";
-  const request = ++renderRequest;
+  const request = beginCaseUpdate();
   $("reset-demo").disabled = false;
   if ($("load-server").disabled) {
     activeApiControllers.forEach((controller) => controller.abort());

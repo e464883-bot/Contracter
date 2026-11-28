@@ -273,6 +273,23 @@
   outline-offset: 3px;
 }
 
+.version-download {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 14px;
+}
+
+.version-download .button {
+  min-height: 44px;
+}
+
+.version-download .button:disabled {
+  opacity: .55;
+  filter: none;
+}
+
 #operator-target {
   width: 100%;
   min-height: 40px;

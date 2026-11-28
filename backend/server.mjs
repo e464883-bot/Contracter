@@ -60,6 +60,17 @@ export function loadConfig(env = process.env) {
   const elevenBranch = env.ELEVENLABS_AGENT_BRANCH_ID || '';
   need(!elevenBranch || /^[A-Za-z0-9_-]{1,120}$/.test(elevenBranch), 500,
     'CONFIG_VOICE_BRANCH', 'ELEVENLABS_AGENT_BRANCH_ID debe ser un identificador de rama.');
+  const voiceEnabled = env.ELEVENLABS_ENABLED === 'true';
+  const elevenKey = filled(env.ELEVENLABS_API_KEY) ? env.ELEVENLABS_API_KEY : '';
+  const elevenAgent = filled(env.ELEVENLABS_AGENT_ID) ? env.ELEVENLABS_AGENT_ID : '';
+  const liveVoiceContext = mode === 'live' && env.CONTRACTER_VOICE_LIVE_CONTEXT_ENABLED === 'true';
+  const voiceChatId = liveVoiceContext ? env.CONTRACTER_TELEGRAM_CHAT_ID || '' : '';
+  const voiceStoreToken = liveVoiceContext ? env.CONTRACTER_STORE_TELEGRAM_TOKEN || '' : '';
+  need(!liveVoiceContext || (voiceEnabled && elevenKey && /^agent_[A-Za-z0-9_]+$/.test(elevenAgent) && elevenBranch
+    && !evaluationCaseId && storeReadToken && /^[0-9a-f]{64}$/.test(voiceStoreToken)
+    && voiceStoreToken !== storeReadToken && /^[1-9][0-9]{0,15}$/.test(voiceChatId)),
+    500, 'CONFIG_LIVE_VOICE_CONTEXT',
+    'La voz con expediente requiere una rama de ElevenLabs, lectura privada y un chat de Telegram autorizado con token propio.');
   const operatorEnabled = env.CONTRACTER_OPERATOR_ENABLED === 'true';
   const operatorToken = operatorEnabled ? env.CONTRACTER_OPERATOR_TOKEN || '' : '';
   need(!operatorEnabled || (/^[A-Za-z0-9_-]{32,128}$/.test(operatorToken) && filled(operatorToken)
@@ -71,10 +82,7 @@ export function loadConfig(env = process.env) {
     operatorToken, operatorEnv: operatorEnabled ? Object.freeze(Object.fromEntries(Object.entries(env)
       .filter(([name]) => /^CONTRACTER_(OPERATOR_|TELEGRAM_|STORE_|GEMINI_)/.test(name)))) : null,
     sqlitePath: env.CONTRACTER_SQLITE_PATH || resolve(ROOT, 'backend/data/mock.sqlite'),
-    voiceEnabled: env.ELEVENLABS_ENABLED === 'true',
-    elevenKey: filled(env.ELEVENLABS_API_KEY) ? env.ELEVENLABS_API_KEY : '',
-    elevenAgent: filled(env.ELEVENLABS_AGENT_ID) ? env.ELEVENLABS_AGENT_ID : '',
-    elevenBranch,
+    voiceEnabled, elevenKey, elevenAgent, elevenBranch, liveVoiceContext, voiceChatId, voiceStoreToken,
     legalEnabled: env.CONTRACTER_LEGAL_RAG_ENABLED === 'true',
     configuredServices: {
       llm: Boolean(filled(env.LLM_BASE_URL) && filled(env.LLM_API_KEY) && filled(env.LLM_MODEL)),
@@ -110,6 +118,23 @@ function demoVoiceBrief(voiceCase, config) {
   return 'Expediente de evaluación de Contracter. ' + (changes === 1
     ? 'La propuesta V2 registra un cambio.' : 'La propuesta V2 registra ' + changes + ' cambios.')
     + ' La revisión humana sigue pendiente. La conversación sólo recibe este resumen de estado.';
+}
+
+function privateVoiceBrief(voiceCase) {
+  const changes = Array.isArray(voiceCase.changelog) ? voiceCase.changelog.length : 0;
+  const sources = Array.isArray(voiceCase.jurisdiction?.sources) ? voiceCase.jurisdiction.sources.length : 0;
+  const approval = voiceCase.human_approval;
+  let status = 'La decisión de revisión humana no pudo confirmarse.';
+  if (approval.status === 'PENDING' && voiceCase.fury?.released === false) {
+    status = 'La revisión humana sigue pendiente.';
+  } else if (approval.approved_sha256 === voiceCase.versions.v2.sha256) {
+    if (approval.status === 'APPROVED' && voiceCase.fury?.released === true) {
+      status = 'El expediente registra aprobación humana de esta V2.';
+    } else if (approval.status === 'REJECTED' && voiceCase.fury?.released === false) {
+      status = 'El expediente registra rechazo de esta V2 en la revisión humana.';
+    }
+  }
+  return `Expediente privado autorizado de Contracter. El sistema conservó la V1 y guardó una propuesta V2. Cambios registrados: ${changes}. Fuentes registradas: ${sources}. ${status} Este resumen sólo contiene el estado del expediente.`;
 }
 
 export function openMockStore(path = ':memory:') {
@@ -212,30 +237,39 @@ export function createScopedReadAdapter(config, fetchFn = fetch) {
   const legalSearch = config.legalEnabled && config.supabaseSecret
     ? { searchLegal: createSupabaseAdapter(config, fetchFn).searchLegal }
     : {};
+  async function readStoredCase(caseId, audience, accessToken, ownerChatId) {
+    const body = { operation: 'get_case', audience, case_id: caseId };
+    if (ownerChatId) body.owner_chat_id = ownerChatId;
+    const response = await fetchFn(url, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
+      headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await boundedJson(response, { allowNotFound: true });
+    if (response.status === 404) {
+      need(result?.error === 'CASE_NOT_FOUND', 502, 'STORE_UNAVAILABLE',
+        'El servicio privado de expedientes no está disponible.');
+      return null;
+    }
+    need(result && typeof result.synthetic === 'boolean' && result.case?.case_id === caseId, 502,
+      'DATABASE_RESULT', 'Resultado de expediente inesperado.');
+    return result;
+  }
   return {
     async getCase(caseId) {
       if (config.evaluationCaseId && caseId !== config.evaluationCaseId) return null;
-      const response = await fetchFn(url, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
-        headers: {
-          Authorization: 'Bearer ' + config.storeReadToken,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ operation: 'get_case', audience: 'dashboard', case_id: caseId }),
-      });
-      const result = await boundedJson(response, { allowNotFound: true });
-      if (response.status === 404) {
-        need(result?.error === 'CASE_NOT_FOUND', 502, 'STORE_UNAVAILABLE',
-          'El servicio privado de expedientes no está disponible.');
-        return null;
-      }
-      need(result && typeof result.synthetic === 'boolean' && result.case?.case_id === caseId, 502,
-        'DATABASE_RESULT', 'Resultado de expediente inesperado.');
+      const result = await readStoredCase(caseId, 'dashboard', config.storeReadToken);
+      if (!result) return null;
       if (config.evaluationCaseId) {
         return result.synthetic && result.case.human_approval?.status === 'PENDING'
           && result.case.fury?.released === false ? { ...result.case, evaluation: true } : null;
       }
       return result.synthetic ? null : result.case;
+    },
+    async getVoiceCase(caseId) {
+      if (!config.liveVoiceContext) return null;
+      const result = await readStoredCase(caseId, 'telegram', config.voiceStoreToken, config.voiceChatId);
+      return result?.synthetic === false ? result.case : null;
     },
     ...legalSearch,
     log() {},
@@ -310,7 +344,8 @@ export async function createGateway({ config = loadConfig(), fetchFn = fetch, st
     services: {
       ...Object.fromEntries(Object.entries(config.configuredServices).map(([k,v]) => [k, configured(v)])),
       database: configured(true, { provider: config.provider, local_fixture_only: config.mode === 'mock' }),
-      elevenlabs: configured(voiceConfigured, { enabled: config.voiceEnabled }),
+      elevenlabs: configured(voiceConfigured, { enabled: config.voiceEnabled,
+        live_case_context: voiceConfigured && config.liveVoiceContext && typeof store.getVoiceCase === 'function' }),
       legal_sources: { status: 'unconfigured', retrieval_configured: config.mode === 'live' && config.legalEnabled && Boolean(store.searchLegal),
         coverage: catalog.coverage?.status || 'unknown', catalogued_sources: catalog.sources?.length || 0,
         catalogued_entities: catalog.entities?.length || 0, last_sync_at: null, corpus_ingested: false,
@@ -387,14 +422,26 @@ export async function createGateway({ config = loadConfig(), fetchFn = fetch, st
         authenticate(req, config.token);
         need(Boolean(origin), 403, 'ORIGIN_REQUIRED', 'La voz requiere un origen permitido.');
         const body = await readBody(req);
-        need(Object.keys(body).length === 1 && typeof body.case_id === 'string' && UUID.test(body.case_id),
-          400, 'INVALID_BODY', 'Se requiere únicamente case_id válido. El agente de voz se fija en el servidor.');
+        need(Object.keys(body).every(key => key === 'case_id' || key === 'share_case_summary')
+          && typeof body.case_id === 'string' && UUID.test(body.case_id)
+          && (!own(body, 'share_case_summary') || typeof body.share_case_summary === 'boolean'),
+          400, 'INVALID_BODY', 'Se requiere case_id válido. El agente y el propietario del expediente se fijan en el servidor.');
         need(voiceConfigured, 503, 'VOICE_UNCONFIGURED', 'ElevenLabs aún no está habilitado para este gateway.');
+        if (config.liveVoiceContext) {
+          need(body.share_case_summary === true, 400, 'VOICE_CONSENT_REQUIRED',
+            'Confirma que deseas compartir con ElevenLabs un resumen limitado del expediente.');
+          need(typeof store.getVoiceCase === 'function', 503, 'VOICE_CONTEXT_UNCONFIGURED',
+            'No se ha configurado la verificación del propietario para hablar sobre este expediente.');
+        } else if (config.mode === 'live' && !config.evaluationCaseId) {
+          need(body.share_case_summary !== true, 503, 'VOICE_CONTEXT_UNCONFIGURED',
+            'La voz con expediente todavía no está habilitada para este gateway.');
+        }
         const caseId = body.case_id.toLowerCase();
-        const voiceCase = sample ? (sample.case_id === caseId ? sample : null) : await store.getCase(caseId);
+        const voiceCase = sample ? (sample.case_id === caseId ? sample : null)
+          : config.liveVoiceContext ? await store.getVoiceCase(caseId) : await store.getCase(caseId);
         need(voiceCase, 404, 'CASE_NOT_FOUND', 'Expediente no encontrado.');
         checkCase(voiceCase, caseId, config.mode);
-        const voiceContext = demoVoiceBrief(voiceCase, config);
+        const voiceContext = config.liveVoiceContext ? privateVoiceBrief(voiceCase) : demoVoiceBrief(voiceCase, config);
         const cutoff = Date.now() - 60000;
         while (voiceWindow.length && voiceWindow[0] < cutoff) voiceWindow.shift();
         need(voiceWindow.length < 3, 429, 'VOICE_RATE_LIMIT', 'Límite de sesiones de voz. Intente después de un minuto.');
@@ -415,7 +462,7 @@ export async function createGateway({ config = loadConfig(), fetchFn = fetch, st
         // Do not log or persist signed URLs: they authorize a private conversation.
         json(200, { signed_url: signed.href, agent_id:config.elevenAgent, case_id:voiceCase.case_id,
           obtained_at:now(), single_use_requested:true, context_linked:voiceContext !== null,
-          note:voiceContext ? 'Sesión de voz preparada con un resumen de evaluación.' : 'Sesión de voz preparada sin acceso al expediente.',
+          note:voiceContext ? 'Sesión de voz preparada con un resumen limitado.' : 'Sesión de voz preparada sin acceso al expediente.',
           ...(voiceContext ? { voice_context:voiceContext } : {}) }); return;
       }
       need(req.method === 'GET' || req.method === 'HEAD', 405, 'METHOD_NOT_ALLOWED', 'Método no permitido.');

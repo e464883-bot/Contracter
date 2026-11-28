@@ -361,6 +361,97 @@ test('voz de evaluación live comparte sólo el estado del expediente sintético
   assert.equal(signedSessions, 1);
 });
 
+const liveVoiceSettings = {
+  CONTRACTER_MODE: 'live', SUPABASE_URL: 'https://aaaaaaaaaaaaaaaaaaaa.supabase.co',
+  CONTRACTER_STORE_READ_TOKEN: '1'.repeat(64), CONTRACTER_STORE_TELEGRAM_TOKEN: '2'.repeat(64),
+  CONTRACTER_TELEGRAM_CHAT_ID: '123', CONTRACTER_VOICE_LIVE_CONTEXT_ENABLED: 'true',
+  ELEVENLABS_ENABLED: 'true', ELEVENLABS_AGENT_ID: 'agent_TEST_ONLY',
+  ELEVENLABS_AGENT_BRANCH_ID: 'branch_TEST_ONLY', ELEVENLABS_API_KEY: 'TEST_VOICE',
+};
+
+test('voz privada exige rama, tokens de alcance distintos, chat privado y ausencia del modo evaluación', () => {
+  for (const invalid of [
+    { ELEVENLABS_AGENT_BRANCH_ID: '' },
+    { CONTRACTER_STORE_READ_TOKEN: '', SUPABASE_SECRET_KEY: 'sb_secret_TEST_ONLY' },
+    { CONTRACTER_STORE_TELEGRAM_TOKEN: liveVoiceSettings.CONTRACTER_STORE_READ_TOKEN },
+    { CONTRACTER_TELEGRAM_CHAT_ID: '-123' },
+    { CONTRACTER_DASHBOARD_EVALUATION_CASE_ID: sample.case_id },
+  ]) {
+    assert.throws(() => config({ ...liveVoiceSettings, ...invalid }), { code: 'CONFIG_LIVE_VOICE_CONTEXT' });
+  }
+});
+
+test('voz privada comparte sólo estado de una V2 del chat configurado con consentimiento para esa sesión', async t => {
+  const confidential = 'PRIVATE_CONTENT_NOT_FOR_PROVIDER';
+  const caseId = sample.case_id;
+  const live = { ...sample, mode: 'live', title: confidential,
+    reports: { ...sample.reports, glenn: { explanation: confidential } } };
+  let plan = 'missing';
+  let reads = 0;
+  let signedSessions = 0;
+  const { base } = await launch(t, {
+    config: config(liveVoiceSettings),
+    fetchFn: async (url, options) => {
+      if (url.origin === liveVoiceSettings.SUPABASE_URL) {
+        reads++;
+        assert.equal(options.headers.Authorization, 'Bearer ' + liveVoiceSettings.CONTRACTER_STORE_TELEGRAM_TOKEN);
+        assert.deepEqual(JSON.parse(options.body), { operation: 'get_case', audience: 'telegram',
+          case_id: caseId, owner_chat_id: liveVoiceSettings.CONTRACTER_TELEGRAM_CHAT_ID });
+        if (plan === 'missing') return Response.json({ error: 'CASE_NOT_FOUND' }, { status: 404 });
+        const rawCase = plan === 'tampered' ? { ...live, versions: { ...live.versions,
+          v2: { ...live.versions.v2, text: confidential } } } : live;
+        return Response.json({ synthetic: plan === 'synthetic', case: rawCase });
+      }
+      signedSessions++;
+      assert.equal(url.origin, 'https://api.elevenlabs.io');
+      assert.equal(url.searchParams.get('branch_id'), 'branch_TEST_ONLY');
+      assert.equal(url.searchParams.has('case_id'), false);
+      assert.equal(options.body, undefined);
+      return Response.json({ signed_url: 'wss://api.elevenlabs.io/v1/convai/conversation?token=SIGNED_TEST' });
+    },
+  });
+  const voice = base + '/api/voice/session';
+  const health = await (await fetch(base + '/api/health', { headers: auth })).json();
+  assert.equal(health.services.elevenlabs.live_case_context, true);
+  assert.equal((await fetch(voice, post(base, { case_id: caseId }))).status, 400);
+  assert.equal((await fetch(voice, post(base, { case_id: caseId, share_case_summary: false }))).status, 400);
+  const input = { case_id: caseId, share_case_summary: true };
+  assert.equal((await fetch(voice, post(base, input, { Authorization: 'Bearer incorrecto' }))).status, 401);
+  assert.equal((await fetch(voice, post(base, { ...input, owner_chat_id: '999' }))).status, 400);
+  assert.equal(reads, 0);
+  assert.equal((await fetch(voice, post(base, input))).status, 404);
+  plan = 'synthetic';
+  assert.equal((await fetch(voice, post(base, input))).status, 404);
+  plan = 'tampered';
+  assert.equal((await fetch(voice, post(base, input))).status, 502);
+  assert.equal(signedSessions, 0);
+  plan = 'valid';
+  const response = await fetch(voice, post(base, input));
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.case_id, caseId);
+  assert.equal(payload.context_linked, true);
+  assert.match(payload.voice_context, /Expediente privado autorizado/);
+  assert.match(payload.voice_context, /La revisión humana sigue pendiente/);
+  assert.ok(payload.voice_context.length <= 700);
+  assert.equal(payload.voice_context.includes(caseId), false);
+  assert.equal(JSON.stringify(payload).includes(confidential), false);
+  assert.equal(reads, 4);
+  assert.equal(signedSessions, 1);
+});
+
+test('pedir contexto privado sin habilitarlo no abre una sesión de voz de respaldo', async t => {
+  const { base } = await launch(t, {
+    config: config({ ...liveVoiceSettings, CONTRACTER_VOICE_LIVE_CONTEXT_ENABLED: 'false' }),
+    fetchFn: async () => assert.fail('No debe llamar al proveedor ni buscar el caso'),
+  });
+  const health = await (await fetch(base + '/api/health', { headers: auth })).json();
+  assert.equal(health.services.elevenlabs.live_case_context, false);
+  const response = await fetch(base + '/api/voice/session', post(base, { case_id: sample.case_id, share_case_summary: true }));
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error, 'VOICE_CONTEXT_UNCONFIGURED');
+});
+
 test('voz rechaza subdominios ajenos y nunca imprime la respuesta secreta', async t => {
   const cfg=config({CONTRACTER_MODE:'live',SUPABASE_URL:'https://project.example.invalid',SUPABASE_SECRET_KEY:'sb_secret_TEST_ONLY',
     ELEVENLABS_ENABLED:'true',ELEVENLABS_AGENT_ID:'agent_TEST_ONLY',ELEVENLABS_API_KEY:'TEST_ONLY'});

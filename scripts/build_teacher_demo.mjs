@@ -1,85 +1,149 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = new URL('../', import.meta.url);
-const read = (path) => readFileSync(new URL(path, root), 'utf8').replaceAll('\r\n', '\n');
-const hash = (value) => createHash('sha256').update(value).digest('base64');
-
-function section(source, start, end) {
-  const startIndex = source.indexOf(start);
-  const endIndex = source.indexOf(end, startIndex + start.length);
-  if (startIndex < 0 || endIndex < 0) throw new Error(`No se encontró la sección ${start}`);
-  return source.slice(startIndex, endIndex);
+// Changes to the public example must be reviewed before updating this digest.
+const fixtureDigest = '7d4426926185ece9c605a44c972a3825b21dcfddcb503aab10b8db9732631285';
+const fixturePath = new URL('../docs/data/sample_case.json', import.meta.url);
+const fixtureText = readFileSync(fixturePath, 'utf8').replaceAll('\r\n', '\n');
+const hash = (content, encoding) => createHash('sha256').update(content).digest(encoding);
+if (hash(fixtureText, 'hex') !== fixtureDigest) {
+  throw new Error('La muestra pública cambió. Revisa todo su contenido antes de autorizar la nueva huella.');
+}
+const sample = JSON.parse(fixtureText);
+if (sample.mode !== 'mock' || sample.publication.target !== 'preview' ||
+    sample.publication.contains_sensitive_data !== false || sample.publication.redacted_for_public !== true ||
+    sample.fury.released || sample.human_approval.status !== 'PENDING' || sample.jurisdiction.sources.length ||
+    sample.costs.total_usd !== 0 || sample.costs.pricing_status !== 'mock') {
+  throw new Error('Sólo se puede publicar la muestra ficticia, sin liberación ni consumo de API.');
 }
 
-const sample = JSON.parse(read('docs/data/sample_case.json'));
-if (sample.mode !== 'mock' || sample.publication.contains_sensitive_data !== false
-    || sample.costs.pricing_status !== 'mock' || sample.costs.total_usd !== 0
-    || sample.jurisdiction.sources.length !== 0
-    || sample.costs.events.some((event) => event.cost_usd !== 0 || event.tokens_input !== 0 || event.tokens_output !== 0)) {
-  throw new Error('La demostración docente requiere una muestra ficticia pública, sin fuentes ni consumo de API.');
-}
-
-const workflow = JSON.parse(read('n8n_workflows/workflow_02_fast_qa.json'));
-const perspectives = Object.fromEntries(['Harvey', 'Murdock', 'Lupin'].map((agent) => {
-  const code = workflow.nodes.find((node) => node.name === `${agent} - consulta`)?.parameters.jsCode;
-  const answer = code?.match(/answer:("(?:[^"\\]|\\.)*")/u)?.[1];
-  if (!answer) throw new Error(`No se encontró la respuesta simulada de ${agent}`);
-  return [agent, JSON.parse(answer)];
-}));
-
-const app = read('docs/app.js');
-const script = [
-  section(app, 'const AUDITORS', 'let renderRequest'),
-  section(app, 'function element', '// A deliberately small display gate'),
-  section(app, 'function displayDate', 'function sourceUrl'),
-  section(app, 'function renderDecision', 'function apiBase')
-    .replace('  currentCase = data;\n', '')
-    .replace('  renderLegalSources(data);\n', ''),
-  section(app, 'const tabs =', 'loadDemo();'),
-  `const fixture = JSON.parse($("demo-data").textContent);
-render(fixture.case, false, "expediente ficticio incluido en este archivo");
-$("simulation-notice").querySelector("p").textContent = "Resultados ficticios preparados para ilustrar el flujo de trabajo. Durante la demostración se muestran estos resultados en el navegador.";
-setText("legal-coverage", "Esta simulación usa México como supuesto de demostración. El expediente contiene cero referencias normativas.");
-for (const [agent, answer] of Object.entries(fixture.perspectives)) setText("qa-" + agent, answer);
-$("qa-guide").addEventListener("click", () => {
-  $("fast-qa").open = true;
-});`,
-].join('\n');
-
-let html = read('docs/index.html');
-html = html.replace('Contracter · Operación', 'Contracter · Demostración docente');
-html = html.replace(/<meta name="description"[^>]+>/u, '<meta name="description" content="Evaluación docente de Contracter con un expediente ficticio y una consulta simulada. Funciona sin internet.">');
-html = html.replace(/<meta http-equiv="Content-Security-Policy"[^>]+>/u,
-  `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-${hash(script)}'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">`);
-html = html.replace(/  <link rel="stylesheet" href="styles\.css">\n  <script src="app\.js" defer><\/script>/u,
-  () => `<style>${read('docs/styles.css')}\n.teacher-route{margin-top:18px;margin-bottom:20px}.teacher-route .guide-link{display:inline-flex;margin-top:8px}.teacher-route .operation-body li{padding-bottom:8px}</style>`);
-
-const sectionsToRemove = [
-  ['          <div class="file-actions">', '        </div>\n        <div id="load-message"'],
-  ['        <section class="panel backend-panel"', '        <div id="case-content"'],
-  ['                <div class="voice-control">', '              </section>\n              <section class="panel context-panel"'],
-  ['              <section class="panel integrations-panel">', '            </aside>'],
+const roles = [
+  ['Fury', 'Coordina el flujo y controla la liberación.'],
+  ['Afton', 'Inspecciona el documento recibido.'],
+  ['House', 'Supervisa las respuestas de los agentes.'],
+  ['Jane', 'Reúne los datos que faltan.'],
+  ['Sherlock', 'Organiza el contexto y sus fuentes.'],
+  ['Morty', 'Comprueba la claridad del texto.'],
+  ['Harvey', 'Revisa el equilibrio comercial.'],
+  ['Murdock', 'Evalúa el sustento normativo.'],
+  ['Lupin', 'Busca vacíos e interpretaciones adversas.'],
+  ['Hamilton', 'Redacta la propuesta V2.'],
+  ['Jarvis', 'Explica los cambios por cláusula.'],
+  ['Watson', 'Presenta el reporte ejecutivo.'],
+  ['Glenn', 'Explica el resultado en lenguaje sencillo.'],
 ];
-for (const [start, end] of sectionsToRemove) html = html.replace(section(html, start, end), '');
 
-const walkthrough = `<section id="operation" class="panel operation-panel teacher-route"><details open><summary><span><strong>Cómo evaluar la demostración</strong></span><span class="details-symbol" aria-hidden="true">+</span></summary><div class="operation-body"><ol><li><a class="guide-link" href="#versions"><strong>Compare el contrato original y la propuesta</strong></a>. La bitácora de Jarvis registra qué cambió y por qué.</li><li><a class="guide-link" href="#team"><strong>Revise el consenso y los 13 roles</strong></a>. Observe por qué V2 sigue pendiente de aprobación humana.</li><li><a id="qa-guide" class="guide-link" href="#qa"><strong>Abra la consulta rápida simulada</strong></a>. Observe cómo se reúnen las tres perspectivas.</li></ol></div></details></section>`;
-html = html.replace(section(html, '        <section id="operation"', '      </section>\n      <footer'), '');
-html = html.replace('        <div id="case-content"', `${walkthrough}\n        <div id="case-content"`);
+function escape(value) {
+  return value.replace(/[&<>"']/gu, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
+}
 
-const qa = `<section id="qa" class="panel operation-panel teacher-route"><details id="fast-qa"><summary><span><strong>Consulta rápida simulada</strong></span><span class="details-symbol" aria-hidden="true">+</span></summary><div class="operation-body"><p><strong>¿Qué riesgos comerciales tiene esta muestra?</strong></p><ol><li><strong>Harvey</strong><p id="qa-Harvey"></p></li><li><strong>Murdock</strong><p id="qa-Murdock"></p></li><li><strong>Lupin</strong><p id="qa-Lupin"></p></li></ol><p>Watson reúne las tres perspectivas. La respuesta de muestra conserva el contrato original y requiere revisión humana.</p></div></details></section>`;
-html = html.replace('              <section id="costs"', `${qa}\n              <section id="costs"`);
-html = html.replace('Guía de operación', 'Guía de evaluación')
-  .replace('Backend sin configurar', 'Archivo autónomo')
-  .replace('SCAFFOLD / V1.0', 'EVALUACIÓN DOCENTE')
-  .replace('Decide con el expediente a la vista.', 'Demostración de auditoría contractual')
-  .replace('Revisa cambios, fuentes y aprobación antes de liberar la propuesta V2.', 'Explore el contrato ficticio, el control de cambios y la consulta rápida. Abrir este archivo cuesta USD 0 y funciona sin internet.')
-  .replace('Estado de la tubería', 'Estado de la auditoría simulada')
-  .replace('Operación · aprobación fuera del navegador', 'Evaluación docente · datos ficticios');
-html = html.replace('<div id="load-message"', '<noscript><p class="load-message">Descargue este archivo y ábralo en un navegador con JavaScript habilitado para ver la demostración.</p></noscript>\n        <div id="load-message"');
+function clauses(version) {
+  return version.text.split('\n').map((line) => `<p>${escape(line)}</p>`).join('\n');
+}
 
-const data = JSON.stringify({ case: sample, perspectives }).replaceAll('<', '\\u003c');
-html = html.replace('</body>', () => `<script type="application/json" id="demo-data">${data}</script>\n<script>${script}</script>\n</body>`);
-const output = new URL('../../Contracter_Demo_Docente.html', import.meta.url);
+const changelog = sample.changelog.map((change) => `
+  <li><h3>Cláusula ${change.line_v2}</h3>
+    <dl><dt>Antes</dt><dd>${escape(change.before)}</dd>
+    <dt>Después</dt><dd>${escape(change.after)}</dd></dl>
+    <p>${escape(change.reason)}</p>
+  </li>`).join('');
+
+const findings = sample.audits.map(({agent, findings}) => `
+  <article><h3>${escape(agent)}</h3>
+    ${findings.map(({clause, observation, recommendation}) => `<p><strong>Cláusula ${escape(clause)}.</strong> ${escape(observation)}</p><p>${escape(recommendation)}</p>`).join('')}
+  </article>`).join('');
+
+const style = `
+:root{color-scheme:dark;font:100%/1.6 system-ui,sans-serif;color:#ecf4f7;background:#101922}
+*{box-sizing:border-box}html{scroll-padding-top:1rem}body{margin:0}
+header,main,footer{max-width:1120px;margin:auto;padding:clamp(24px,6vw,76px)}
+header{padding-bottom:20px}main{padding-top:20px}footer{padding-top:0;color:#9cafbd}
+nav{display:flex;flex-wrap:wrap;gap:12px 24px;margin:24px 0 0}a{color:#a4ebd6;text-underline-offset:4px}
+a:focus-visible{outline:3px solid #a4ebd6;outline-offset:4px}
+h1,h2,h3,p{margin:0 0 14px}h1{font-size:clamp(2.9rem,9vw,6.5rem);line-height:.95;letter-spacing:-.06em}
+h2{font-size:clamp(1.5rem,4vw,2.3rem);line-height:1.15;letter-spacing:-.025em}h3{font-size:1.06rem}
+section{padding:34px 0;border-top:1px solid #384a54}section p:last-child{margin-bottom:0}
+.eyebrow{color:#a4ebd6;letter-spacing:.14em;font-size:.8rem;text-transform:uppercase;font-weight:700}
+.intro{max-width:65ch;color:#c7d6de;font-size:1.18rem}
+.notice{max-width:68ch;border-left:3px solid #efc380;padding-left:16px;color:#f9dfb0}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:22px 0 0}
+article{background:#172633;border:1px solid #344957;border-radius:12px;padding:clamp(16px,3vw,24px)}
+article p{overflow-wrap:anywhere}article strong,dt,summary{color:#a4ebd6}dl{margin:0}
+dd{margin:0 0 .55rem}ul,ol{padding-left:1.35rem}
+li{margin-bottom:.55rem}.changes{list-style:none;padding-left:0}.changes li+li{margin-top:18px}
+.changes li{padding:16px 0;border-bottom:1px solid #344957}.changes li p{color:#c7d6de}
+summary{cursor:pointer;font-weight:650}.reports{max-width:75ch}
+@media(max-width:650px){.grid{grid-template-columns:1fr}header,main,footer{padding-left:20px;padding-right:20px}}
+`;
+
+const html = `<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Demostración pública de revisión contractual con un expediente de ejemplo.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-${hash(style, 'base64')}'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Contracter · Demostración</title>
+  <style>${style}</style>
+</head>
+<body>
+<header>
+  <p class="eyebrow">Demostración pública</p>
+  <h1>Contracter</h1>
+  <p class="intro">Explora cómo se revisa un contrato, qué cambios podrían resolver sus ambigüedades y qué debe validar una persona antes de aprobarlos.</p>
+  <p class="notice">Este recorrido usa un expediente de ejemplo y resultados simulados. La propuesta V2 está pendiente de revisión humana.</p>
+  <nav aria-label="Secciones">
+    <a href="#versiones">Comparar versiones</a>
+    <a href="#jarvis">Cambios de Jarvis</a>
+    <a href="#analisis">Hallazgos y agentes</a>
+    <a href="#reportes">Reportes</a>
+  </nav>
+</header>
+<main>
+  <section id="versiones" aria-labelledby="versiones-titulo">
+    <h2 id="versiones-titulo">Comparar versiones</h2>
+    <div class="grid">
+      <article><h3>V1 · Contrato recibido</h3>${clauses(sample.versions.v1)}</article>
+      <article><h3>V2 · Propuesta de edición</h3>${clauses(sample.versions.v2)}</article>
+    </div>
+  </section>
+  <section id="jarvis" aria-labelledby="jarvis-titulo">
+    <h2 id="jarvis-titulo">Bitácora de Jarvis</h2>
+    <ol class="changes">${changelog}</ol>
+  </section>
+  <section id="analisis" aria-labelledby="analisis-titulo">
+    <h2 id="analisis-titulo">Hallazgos de la auditoría simulada</h2>
+    <p>Las cuatro perspectivas revisaron el mismo borrador. Su consenso sigue sujeto a la revisión humana.</p>
+    <div class="grid">${findings}</div>
+    <details><summary>Ver los 13 roles</summary>
+      <ul>${roles.map(([name, job]) => `<li><strong>${escape(name)}.</strong> ${escape(job)}</li>`).join('')}</ul>
+    </details>
+  </section>
+  <section id="reportes" class="reports" aria-labelledby="reportes-titulo">
+    <h2 id="reportes-titulo">Reportes del expediente de ejemplo</h2>
+    <h3>Watson · Resumen ejecutivo</h3>
+    <p>${escape(sample.reports.watson.summary)}</p>
+    <h3>Glenn · Explicación en lenguaje sencillo</h3>
+    <p>${escape(sample.reports.glenn.explanation)}</p>
+  </section>
+</main>
+<footer><p>Contracter · Ejecución simulada con costo de modelo de USD 0</p></footer>
+</body>
+</html>
+`;
+
+const args = process.argv.slice(2);
+if (args.length && (args.length !== 2 || args[0] !== '--output' || !args[1])) {
+  throw new Error('Uso: node scripts/build_teacher_demo.mjs [--output ruta.html]');
+}
+const output = args.length
+  ? resolve(args[1])
+  : fileURLToPath(new URL('../../Contracter_Demo_Docente.html', import.meta.url));
+if (!output.endsWith('.html')) throw new Error('La salida debe tener extensión .html.');
+mkdirSync(dirname(output), { recursive: true });
 writeFileSync(output, html, 'utf8');
-console.log(output.href);
+console.log(output);
